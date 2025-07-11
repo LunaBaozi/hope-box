@@ -15,7 +15,7 @@ import gzip
 import six
 
 import os
-project_root = os.path.dirname(os.path.dirname(os.path.dirname((__file__))))
+project_root = os.path.dirname(os.path.dirname(__file__))
 # print(project_root)
 # project_root = "/vol/data/airs/AIRS/OpenMI/GraphBP/GraphBP"
 

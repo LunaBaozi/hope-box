@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import pandas as pd
+from pathlib import Path
 sys.path.append(os.path.join(os.environ['CONDA_PREFIX'],'share','RDKit','Contrib'))
 
 from rdkit import Chem
@@ -9,6 +10,11 @@ from SA_Score import sascorer
 from NP_Score import npscorer
 # from syba.syba import SybaClassifier
 
+# Set the model path before importing the scripts
+script_dir = os.path.dirname(os.path.abspath(__file__))
+# print(script_dir)
+model_path = os.path.join(script_dir, 'models', 'model.ckpt-10654.as_numpy.pickle')
+os.environ['SCSCORER_MODEL_PATH'] = model_path
 
 from scripts import scscorer_standalone 
 from scripts.aurk_int_preprocess import read_aurora_kinase_interactions
@@ -121,10 +127,18 @@ if __name__ == '__main__':
     pdbid = args.pdbid.lower()  
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    print(script_dir)
+    # /vol/data/drug-design-pipeline/external/hope-box
     parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-    sdf_folder = os.path.join(parent_dir, f'trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
+    print(parent_dir)
+    # /vol/data/drug-design-pipeline/external
+    model = "GraphBP"
+
+    if model == "GraphBP":
+        sdf_folder = os.path.join(parent_dir, f'graphbp/OpenMI/{model}/{model}/trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
+    # sdf_folder = os.path.join(parent_dir, f'graphbp/OpenMI/{model}/{model}/trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
     known_inhib_file = os.path.join(script_dir, f'data/aurora_kinase_{aurora}_interactions.csv')
-    results_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
+    results_dir = os.path.join(script_dir, f'results/results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
     output_csv = os.path.join(results_dir, f'synthesizability_scores_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
     
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)

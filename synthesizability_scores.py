@@ -28,6 +28,17 @@ scscorer.restore()
 # syba = SybaClassifier()
 # syba.fitDefaultScore()
 
+def get_paths_from_config(config_path="../../../config/config.yaml"):
+    """Load paths from pipeline configuration"""
+    try:
+        import yaml
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        return config
+    except:
+        # Fallback to relative paths if config not found
+        return None
+
 
 def sdf_to_mol(sdf_path, mol_path):
     """
@@ -112,12 +123,18 @@ def calculate_scores(mols, smiles, filenames):
 
 
 if __name__ == '__main__':
+    # Try to load pipeline config
+    # pipeline_config = get_paths_from_config()
+
     parser = argparse.ArgumentParser(description='Wrapper for CADD pipeline targeting Aurora protein kinases.')
     parser.add_argument('--num_gen', type=int, required=False, default=0, help='Desired number of generated molecules (int, positive)')
     parser.add_argument('--epoch', type=int, required=False, default=0, help='Epoch number the model will use to generate molecules (int, 0-99)')
     parser.add_argument('--known_binding_site', type=str, required=False, default='0', help='Allow model to use binding site information (True, False)')
     parser.add_argument('--aurora', type=str, required=False, default='B', help='Aurora kinase type (str, A, B)')
     parser.add_argument('--pdbid', type=str, required=False, default='4af3', help='Aurora kinase type (str, A, B)')
+    # parser.add_argument('--base_dir', type=str, required=False, default=None, 
+    #                    help='Base directory of the pipeline')
+    parser.add_argument('--output_file', type=str, required=False, default=None, help='Output file path')
     args = parser.parse_args()
 
     num_gen = args.num_gen
@@ -126,22 +143,64 @@ if __name__ == '__main__':
     aurora = args.aurora
     pdbid = args.pdbid.lower()  
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    print(script_dir)
-    # /vol/data/drug-design-pipeline/external/hope-box
-    parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-    print(parent_dir)
+    # Determine base directory
+    # if args.base_dir:
+    #     base_dir = Path(args.base_dir)
+    # elif pipeline_config:
+    #     base_dir = Path(pipeline_config['project_paths']['base_dir']).resolve()
+    # else:
+    #     # Fallback: assume we're in external/hope-box and go up two levels
+    #     base_dir = Path(__file__).parent.parent.parent
+    
+    # # Build paths dynamically
+    # script_dir = Path(__file__).parent
+    
+    # if pipeline_config and args.epoch != 0:
+    #     # Use config-based paths
+    #     graphbp_config = pipeline_config['modules']['graphbp']
+    #     sdf_folder = (base_dir / 
+    #                  graphbp_config['path'] / 
+    #                  graphbp_config['trained_model_subdir'] / 
+    #                  graphbp_config['output_pattern'].format(
+    #                      epoch=args.epoch,
+    #                      num_gen=args.num_gen,
+    #                      known_binding_site=args.known_binding_site,
+    #                      pdbid=args.pdbid
+    #                  ))
+    # else:
+    #     # Fallback paths
+    #     sdf_folder = base_dir / f'external/graphbp/trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{args.epoch}_mols_{args.num_gen}_bs_{args.known_binding_site}_pdbid_{args.pdbid}/sdf'
+    
+    # Use provided output path or default behavior
+    if args.output_file:
+        output_csv = args.output_file
+        os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    else:
+        # Default behavior for standalone usage
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        results_dir = os.path.join(script_dir, f'results/epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
+        output_csv = os.path.join(results_dir, f'synthesizability_scores_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
+        os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+
+
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    # print(script_dir)
+    # # /vol/data/drug-design-pipeline/external/hope-box
+    # parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
+    # print(parent_dir)
     # /vol/data/drug-design-pipeline/external
     model = "GraphBP"
 
     if model == "GraphBP":
+        parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
         sdf_folder = os.path.join(parent_dir, f'graphbp/OpenMI/{model}/{model}/trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
     # sdf_folder = os.path.join(parent_dir, f'graphbp/OpenMI/{model}/{model}/trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
     known_inhib_file = os.path.join(script_dir, f'data/aurora_kinase_{aurora}_interactions.csv')
-    results_dir = os.path.join(script_dir, f'results/results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
-    output_csv = os.path.join(results_dir, f'synthesizability_scores_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
+    # results_dir = os.path.join(script_dir, f'results/results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
+    # output_csv = os.path.join(results_dir, f'synthesizability_scores_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
     
-    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    # os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     
     if epoch != 0:
         # Calculating scores for generated molecules

@@ -3,8 +3,6 @@
 Lipinski's Rule of Five calculation from:
 https://gist.github.com/strets123/fdc4db6d450b66345f46
 """
-
-import os
 import argparse
 import pandas as pd
 
@@ -15,7 +13,7 @@ from rdkit.Chem import Descriptors
 
 from scripts.aurk_int_preprocess import read_aurora_kinase_interactions
 from scripts.gen_mols_preprocess import load_mols_from_sdf_folder
-
+from scripts.load_config_paths import PipelinePaths
 
 def lipinski_trial(mol): 
     passed = []
@@ -43,7 +41,6 @@ def lipinski_trial(mol):
         passed.append('Log partition coefficient: %s' % mol_logp)
     return passed, failed 
 
-
 def evaluate_lipinski_rules(mols, smiles, filenames):
     results = []
     for mol, smi, fn in zip(mols, smiles, filenames):
@@ -66,15 +63,16 @@ def evaluate_lipinski_rules(mols, smiles, filenames):
             })
     return pd.DataFrame(results)
 
-
-
 if __name__ == '__main__':
+    paths = PipelinePaths()
+
     parser = argparse.ArgumentParser(description='Wrapper for CADD pipeline targeting Aurora protein kinases.')
     parser.add_argument('--num_gen', type=int, required=False, default=0, help='Desired number of generated molecules (int, positive)')
     parser.add_argument('--epoch', type=int, required=False, default=0, help='Epoch number the model will use to generate molecules (int, 0-99)')
     parser.add_argument('--known_binding_site', type=str, required=False, default='0', help='Allow model to use binding site information (True, False)')
     parser.add_argument('--aurora', type=str, required=False, default='B', help='Aurora kinase type (str, A, B)')
     parser.add_argument('--pdbid', type=str, required=False, default='4af3', help='Aurora kinase type (str, A, B)')
+    parser.add_argument('--output_file', type=str, required=False, default=None, help='Output file path')
     args = parser.parse_args()
 
     epoch = args.epoch
@@ -83,24 +81,24 @@ if __name__ == '__main__':
     aurora = args.aurora
     pdbid = args.pdbid.lower()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-    sdf_folder = os.path.join(parent_dir, f'trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
-    known_inhib_file = os.path.join(script_dir, f'data/aurora_kinase_{aurora}_interactions.csv')
-    results_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
-    output_csv = os.path.join(results_dir, f'lipinski_pass_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-
-    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    # output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file) 
+    output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file, 'lipinski_pass')
 
     if epoch != 0:
-        # Calculating scores for generated molecules
+        # Process generated molecules from GraphBP
+        sdf_folder = paths.graphbp_sdf_path(epoch, num_gen, known_binding_site, pdbid)
+        print(f"Loading molecules from: {sdf_folder}")
+
         mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
         lipinski = evaluate_lipinski_rules(mols, smiles, filenames)
         lipinski.to_csv(output_csv, index=False)
 
     else:
-        # Calculating scores for Aurora inhibitors
-        mols, smiles, filenames, fps = read_aurora_kinase_interactions(known_inhib_file)
+        # Process known Aurora kinase inhibitors
+        aurora_data_file = paths.aurora_data_path(aurora)
+        print(f"Loading Aurora kinase data from: {aurora_data_file}")
+        
+        mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
         lipinski = evaluate_lipinski_rules(mols, smiles, filenames)
         lipinski.to_csv(output_csv, index=False)
 

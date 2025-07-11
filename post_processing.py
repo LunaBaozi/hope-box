@@ -5,17 +5,16 @@ from rdkit import Chem
 
 from scripts.aurk_int_preprocess import read_aurora_kinase_interactions
 from scripts.gen_mols_preprocess import load_mols_from_sdf_folder
-
-
+from scripts.load_config_paths import PipelinePaths
 
 def merge_on_smiles(synth_path, 
                     lipinski_path,
                     tanimoto_path,
                     output_path):
     """
-    Merges three CSV files on the 'smiles' column, sorts by 'tanimoto' in decreasing order, and saves the result.
+    Merges three CSV files on the 'smiles' column, sorts by 'tanimoto' in 
+    decreasing order, and saves the result.
     """
-
     scores_df = pd.read_csv(synth_path)
     lipinski_df = pd.read_csv(lipinski_path)
     tanimoto_df = pd.read_csv(tanimoto_path)
@@ -35,16 +34,12 @@ def merge_on_smiles(synth_path,
     merged_df.to_csv(output_path, index=False)
     return merged_df
 
-
 def export_top_100_tanimoto(df):
     return df.sort_values(by='tanimoto', ascending=False).head(100)
-
 
 def export_top_50_sa_score(input_df):
     df_sorted = input_df.sort_values(by='SA_score', ascending=True)    
     return df_sorted.drop_duplicates(subset='filename').head(50)
-
-
 
 def copy_top_50_ligands(mols, top_50_sa_score, dest_ligand_dir):
     """
@@ -68,14 +63,16 @@ def copy_top_50_ligands(mols, top_50_sa_score, dest_ligand_dir):
         else:
             print(f'Warning: Could not parse mol for {fname}')
 
-
 if __name__ == '__main__':
+    paths = PipelinePaths()
+
     parser = argparse.ArgumentParser(description='Wrapper for CADD pipeline targeting Aurora protein kinases.')
     parser.add_argument('--num_gen', type=int, required=False, default=0, help='Desired number of generated molecules (int, positive)')
     parser.add_argument('--epoch', type=int, required=False, default=0, help='Epoch number the model will use to generate molecules (int, 0-99)')
     parser.add_argument('--known_binding_site', type=str, required=False, default='0', help='Allow model to use binding site information (True, False)')
     parser.add_argument('--aurora', type=str, required=False, default='B', help='Aurora kinase type (str, A, B)')
     parser.add_argument('--pdbid', type=str, required=False, default='4af3', help='Aurora kinase type (str, A, B)')
+    parser.add_argument('--output_file', type=str, required=False, default=None, help='Output file path')        
     args = parser.parse_args()
 
     epoch = args.epoch

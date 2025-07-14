@@ -1,9 +1,13 @@
 import os
 import argparse
 from pathlib import Path
+from typing import Optional, Tuple, List, Dict, Any
+
 import pandas as pd
 import numpy as np
-from typing import List, Tuple, Optional, Dict, Any, Union
+import matplotlib.pyplot as plt
+import seaborn as sns
+import PIL.ImageOps
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -131,964 +135,878 @@ class PlotContext:
 
 class MolecularVisualizationSuite:
     """
-    Comprehensive molecular visualization suite for drug discovery analysis.
-    
-    This class encapsulates all visualization functionality with a clean, modular design
-    that eliminates code duplication and provides consistent, high-quality plots.
+    A comprehensive suite for visualizing molecular properties and synthesizability metrics.
     """
     
-    def __init__(self, context: PlotContext, config: Optional[PlotConfiguration] = None):
-        """
-        Initialize the visualization suite.
-        
-        Args:
-            context: Plot context containing parameters and paths
-            config: Optional custom configuration (uses default if None)
-        """
-        self.context = context
-        self.config = config or PlotConfiguration()
+    # Color schemes and plotting constants
+    COLORS = {
+        'primary': ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'],
+        'synthesizability': ['orange', 'blue', 'pink'],
+        'gradients': {'green': ('green', 'darkgreen'), 'orange': ('orange', 'darkorange'), 
+                     'blue': ('blue', 'darkblue'), 'pink': ('pink', 'deeppink')}
+    }
+    
+    FIGURE_SIZE = (8, 5)
+    LARGE_FIGURE_SIZE = (8, 6)
+    MOL_IMAGE_SIZE = (1800, 1800)
+    
+    def __init__(self, epoch: int, num_gen: int, known_binding_site: str, 
+                 aurora: str, pdbid: str, image_dir: str):
+        """Initialize the visualization suite with experiment parameters."""
+        self.epoch = epoch
+        self.num_gen = num_gen
+        self.known_binding_site = known_binding_site
+        self.aurora = aurora
+        self.pdbid = pdbid
+        self.image_dir = Path(image_dir)
         
         # Ensure image directory exists
-        self.context.image_dir.mkdir(parents=True, exist_ok=True)
-    
-    def _create_histogram_base(self, df: pd.DataFrame, score_col: str) -> Tuple[plt.Figure, plt.Axes]:
-        """
-        Create a base histogram with consistent styling and common elements.
+        self.image_dir.mkdir(parents=True, exist_ok=True)
         
-        This method eliminates code duplication by providing a common foundation
-        for all histogram plots.
-        """
-        try:
-            # Get score configuration
-            score_config = self.config.SCORE_CONFIGS.get(score_col, {})
-            
-            # Setup figure
-            fig, ax = plt.subplots(figsize=self.config.FIGURE_SIZE)
-            ax.grid(axis='y', linestyle='--', alpha=0.7)
-            
-            # Get data
-            values = df[score_col].dropna().values
-            if len(values) == 0:
-                raise ValueError(f"No valid values found for {score_col}")
-            
-            # Handle dynamic binning for SMILES length
-            if score_col == 'len_smiles':
-                min_len, max_len = int(values.min()), int(values.max())
-                bins = np.linspace(min_len - 0.5, max_len + 0.5, num=30)
-                x_range = (min_len - 0.5, max_len + 0.5)
-            else:
-                bins = score_config['bins']
-                x_range = score_config['x_range']
-            
-            # Create histogram
-            color = self.config.COLORS.get(score_col.lower().replace('score', '_score'), 'gray')
-            ax.hist(values, bins=bins, color=color, edgecolor='black', 
-                   rwidth=0.8, alpha=0.6, label='Histogram')
-            
-            # Add KDE overlay with robust error handling
-            self._add_kde_overlay(ax, values, f'dark{color}', x_range, bins)
-            
-            # Add mean line
-            self._add_mean_line(ax, values)
-            
-            # Apply styling
-            ax.set_xlabel(score_config.get('xlabel', score_col))
-            ax.set_ylabel('Count of Molecules')
-            ax.set_xlim(x_range)
-            ax.set_title(score_config.get('title', f'Distribution of {score_col}'))
-            ax.legend()
-            
-            return fig, ax
-            
-        except Exception as e:
-            print(f"Error creating histogram for {score_col}: {e}")
-            raise
-    
-    def _add_kde_overlay(self, ax: plt.Axes, values: np.ndarray, color: str, 
-                        x_range: Tuple[float, float], bins: np.ndarray) -> None:
-        """Add KDE overlay with robust error handling"""
+    def _save_figure(self, filename: str, dpi: int = 300) -> None:
+        """Save figure with consistent formatting."""
+        filepath = self.image_dir / f"{filename}.png"
+        plt.savefig(filepath, dpi=dpi, bbox_inches='tight')
+        
+    def _add_kde_overlay(self, ax, values: np.ndarray, x_range: Tuple[float, float], 
+                        color: str, bins: np.ndarray) -> None:
+        """Add KDE overlay to histogram."""
         try:
             # Check for sufficient data diversity
             if len(values) < 3 or np.std(values) < 1e-10:
                 return  # Skip KDE for insufficient or non-diverse data
                 
             kde = gaussian_kde(values)
-            x_vals = np.linspace(*x_range, 300)
+            x_vals = np.linspace(x_range[0], x_range[1], 300)
             kde_vals = kde(x_vals) * len(values) * (bins[1] - bins[0])
             ax.plot(x_vals, kde_vals, color=color, lw=2, label='KDE')
+        except (ImportError, np.linalg.LinAlgError):
+            pass  # Skip KDE if not available or singular matrix
             
-        except Exception as e:
-            # Silently skip KDE on any error (singular matrix, etc.)
-            pass
-    
-    def _add_mean_line(self, ax: plt.Axes, values: np.ndarray) -> None:
-        """Add mean line to plot"""
-        try:
-            mean_val = np.mean(values)
-            ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, 
-                      label=f'Mean = {mean_val:.2f}')
-        except Exception:
-            pass  # Skip mean line on error
-    
-    def _add_molecule_inset(self, fig: plt.Figure, ax: plt.Axes, df: pd.DataFrame, 
-                           score_col: str, minimize: bool = True) -> None:
-        """Add molecule structure inset to plot with improved positioning"""
-        try:
-            if 'smiles' not in df.columns or len(df) == 0:
-                return
-                
-            idx = df[score_col].idxmin() if minimize else df[score_col].idxmax()
-            smiles = df.loc[idx, 'smiles']
-            score = df.loc[idx, score_col]
+    def _add_molecule_inset(self, fig, ax, df: pd.DataFrame, score_column: str, 
+                           minimize: bool = True) -> None:
+        """Add molecule structure inset to plot."""
+        if 'smiles' not in df.columns:
+            return
             
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                return
-                
-            img = Draw.MolToImage(mol, size=(1200, 1200))
-            img = PIL.ImageOps.expand(img, border=8, fill='black')
-            
-            filename = df.loc[idx, 'filename'] if 'filename' in df.columns else 'N/A'
-            text = f'File: {filename[:20]}...\n{score_col}: {score:.2f}'
-            
-            # Position inset relative to legend
-            legend = ax.get_legend()
-            if legend:
-                fig.canvas.draw()
-                legend_box = legend.get_window_extent(fig.canvas.get_renderer())
-                legend_box = legend_box.transformed(fig.transFigure.inverted())
-                
-                inset_width, inset_height = 0.25, 0.5
-                inset_x = max(0.02, legend_box.x1 - inset_width)
-                inset_y = max(0.02, legend_box.y0 - inset_height - 0.02)
-                
-                inset_ax = fig.add_axes([inset_x, inset_y, inset_width, inset_height])
-                inset_ax.axis('off')
-                inset_ax.imshow(img)
-                inset_ax.text(0.5, 0.02, text, ha='center', va='bottom', fontsize=8,
-                             color='white', transform=inset_ax.transAxes,
-                             bbox=dict(facecolor='black', alpha=0.7, boxstyle='round,pad=0.3'))
-                             
-        except Exception as e:
-            print(f"Warning: Could not add molecule inset: {e}")
-    
-    def plot_synthesizability_score(self, df: pd.DataFrame, score_type: ScoreType) -> None:
-        """
-        Plot synthesizability score distribution with unified interface.
+        idx = df[score_column].idxmin() if minimize else df[score_column].idxmax()
+        smiles = df.loc[idx, 'smiles']
+        score = df.loc[idx, score_column]
         
-        This method replaces separate plot_sa_score, plot_sc_score, plot_np_score functions
-        with a single, configurable method.
-        """
-        try:
-            score_col = score_type.value
-            fig, ax = self._create_histogram_base(df, score_col)
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return
             
-            # Add molecule inset for score plots (not for SMILES length)
-            if score_type != ScoreType.SMILES_LENGTH:
-                score_config = self.config.SCORE_CONFIGS[score_col]
-                self._add_molecule_inset(fig, ax, df, score_col, score_config['minimize'])
-            
-            plt.tight_layout()
-            plt.show()
-            
-            # Save plot
-            plot_type = score_col.lower().replace('_', '')
-            self._save_plot(fig, plot_type)
-            
-        except Exception as e:
-            print(f"Error plotting {score_type.value}: {e}")
-            raise
-        finally:
-            plt.close(fig)
-    
-    def plot_smiles_length(self, df: pd.DataFrame) -> None:
-        """Plot SMILES length distribution"""
-        self.plot_synthesizability_score(df, ScoreType.SMILES_LENGTH)
-    
-    def plot_sa_score(self, df: pd.DataFrame) -> None:
-        """Plot SA score distribution"""
-        self.plot_synthesizability_score(df, ScoreType.SA_SCORE)
-    
-    def plot_sc_score(self, df: pd.DataFrame) -> None:
-        """Plot SC score distribution"""
-        self.plot_synthesizability_score(df, ScoreType.SC_SCORE)
-    
-    def plot_np_score(self, df: pd.DataFrame) -> None:
-        """Plot NP score distribution"""
-        self.plot_synthesizability_score(df, ScoreType.NP_SCORE)
-    
-    def _create_pie_chart_base(self, data: pd.Series, title: str, plot_type: str) -> None:
-        """Create a base pie chart with consistent styling"""
-        try:
-            fig, ax = plt.subplots(figsize=self.config.PIE_FIGURE_SIZE)
-            
-            # Filter out zero values for cleaner pie charts
-            data_filtered = data[data > 0]
-            
-            wedges, texts, autotexts = ax.pie(
-                data_filtered, 
-                labels=data_filtered.index, 
-                autopct='%1.1f%%', 
-                startangle=140,
-                colors=plt.cm.Set3.colors[:len(data_filtered)]
-            )
-            
-            # Improve text readability
-            for autotext in autotexts:
-                autotext.set_color('white')
-                autotext.set_fontweight('bold')
-            
-            ax.set_title(title, fontsize=14, fontweight='bold')
-            plt.axis('equal')
-            plt.tight_layout()
-            plt.show()
-            
-            self._save_plot(fig, plot_type)
-            
-        except Exception as e:
-            print(f"Error creating pie chart {plot_type}: {e}")
-            raise
-        finally:
-            plt.close(fig)
-    
-    def plot_score_pie_chart(self, df: pd.DataFrame, score_type: ScoreType) -> None:
-        """Create pie chart for score distribution with unified interface"""
-        try:
-            score_col = score_type.value
-            pie_config = self.config.PIE_CHART_CONFIGS[score_col]
-            
-            # Create bins
-            df_temp = df.copy()
-            bin_col = f'{score_col}_bin'
-            df_temp[bin_col] = pd.cut(
-                df_temp[score_col], 
-                bins=pie_config['bins'], 
-                labels=pie_config['labels'],
-                right=True, 
-                include_lowest=True
-            )
-            
-            counts = df_temp[bin_col].value_counts().reindex(pie_config['labels'])
-            plot_type = f"{score_col.lower().replace('_', '')}_pie"
-            
-            self._create_pie_chart_base(counts, pie_config['title'], plot_type)
-            
-        except Exception as e:
-            print(f"Error creating pie chart for {score_type.value}: {e}")
-            raise
-    
-    def plot_lipinski_violations_pie(self, df: pd.DataFrame) -> None:
-        """Plot Lipinski rule violations as pie chart"""
-        try:
-            violation_counts = df['failed'].fillna('').apply(
-                lambda x: 0 if x.strip() == '' else len(x.split(';'))
-            )
-            violation_summary = violation_counts.value_counts().sort_index()
-            
-            # Create meaningful labels
-            violation_summary.index = [
-                f'{i} rule{"s" if i != 1 else ""} violated' 
-                for i in violation_summary.index
-            ]
-            
-            self._create_pie_chart_base(
-                violation_summary, 
-                'Lipinski\'s Rule Violations per Molecule', 
-                'lipinski_violations'
-            )
-            
-        except Exception as e:
-            print(f"Error creating Lipinski violations pie chart: {e}")
-            raise
-    
-    def _normalize_scores(self, df: pd.DataFrame) -> Dict[str, np.ndarray]:
-        """Normalize scores to 0-1 range for statistical comparison"""
-        normalized = {}
+        img = Draw.MolToImage(mol, size=self.MOL_IMAGE_SIZE)
+        img = PIL.ImageOps.expand(img, border=8, fill='black')
         
-        for score_col, config in self.config.SCORE_CONFIGS.items():
-            if config['norm_range'] and score_col in df.columns:
-                min_val, max_val = config['norm_range']
-                normalized[score_col] = (df[score_col] - min_val) / (max_val - min_val)
+        filename = df.loc[idx, 'filename'] if 'filename' in df.columns else ''
+        text = f'Filename:\n{filename}\n{score_column}: {score:.2f}'
         
-        return normalized
+        # Position inset relative to legend
+        legend = ax.get_legend()
+        if legend:
+            fig.canvas.draw()
+            legend_box = legend.get_window_extent(fig.canvas.get_renderer())
+            legend_box = legend_box.transformed(fig.transFigure.inverted())
+            
+            inset_width, inset_height = 0.3, 0.6
+            inset_x = legend_box.x1 - inset_width
+            inset_y = legend_box.y0 - inset_height - 0.02
+            
+            inset_ax = fig.add_axes([inset_x, inset_y, inset_width, inset_height])
+            inset_ax.axis('off')
+            inset_ax.imshow(img)
+            inset_ax.text(0.5, 0.05, text, ha='center', va='bottom', fontsize=6,
+                         color='white', bbox=dict(facecolor='black', alpha=0.6, 
+                         boxstyle='round,pad=0.3'), transform=inset_ax.transAxes)
     
-    def plot_statistical_comparison(self, df: pd.DataFrame, plot_type: str = 'boxplot') -> None:
-        """Create statistical comparison plots (boxplot or violin plot)"""
-        try:
-            normalized = self._normalize_scores(df)
-            if not normalized:
-                print("Warning: No valid scores for statistical comparison")
-                return
+    def _create_histogram_base(self, df: pd.DataFrame, column: str, title: str, 
+                              xlabel: str, color: str, bins: np.ndarray = None,
+                              x_range: Optional[Tuple[float, float]] = None) -> Tuple[plt.Figure, plt.Axes]:
+        """Create base histogram with common formatting."""
+        fig, ax = plt.subplots(figsize=self.FIGURE_SIZE)
+        values = df[column].dropna().values
+        
+        if bins is None:
+            bins = np.linspace(values.min() - 0.5, values.max() + 0.5, 30)
+        if x_range is None:
+            x_range = (values.min(), values.max())
             
-            data = [normalized[key].dropna().values for key in normalized.keys()]
-            labels = list(normalized.keys())
-            
-            fig, ax = plt.subplots(figsize=self.config.FIGURE_SIZE)
-            
-            if plot_type == 'boxplot':
-                box = ax.boxplot(
-                    data, 
-                    patch_artist=True, 
-                    labels=labels, 
-                    showmeans=True,
-                    boxprops=dict(facecolor='lightblue', alpha=0.7),
-                    medianprops=dict(color='red', linewidth=2),
-                    meanprops=dict(marker='o', markerfacecolor='blue', markeredgecolor='black')
-                )
-                title = 'Boxplot of Normalized Synthesizability Scores'
-                
-            elif plot_type == 'violin':
-                parts = ax.violinplot(data, showmeans=True, showmedians=True)
-                colors = ['orange', 'blue', 'pink'][:len(data)]
-                
-                for i, pc in enumerate(parts['bodies']):
-                    pc.set_facecolor(colors[i])
-                    pc.set_alpha(0.6)
-                
-                ax.set_xticks(range(1, len(labels) + 1))
-                ax.set_xticklabels(labels)
-                title = 'Violin Plot of Normalized Synthesizability Scores'
-            
-            ax.set_ylabel('Normalized Score Value (0-1)')
-            ax.set_title(title)
-            ax.grid(axis='y', linestyle='--', alpha=0.7)
-            
-            plt.tight_layout()
-            plt.show()
-            
-            self._save_plot(fig, f'{plot_type}_synthesizability')
-            
-        except Exception as e:
-            print(f"Error creating {plot_type}: {e}")
-            raise
-        finally:
-            plt.close(fig)
+        ax.hist(values, bins=bins, color=color, edgecolor='black', 
+               rwidth=0.8, alpha=0.6, label='Histogram')
+        
+        # Add KDE overlay
+        kde_color = self.COLORS['gradients'].get(color, (color, color))[1]
+        self._add_kde_overlay(ax, values, x_range, kde_color, bins)
+        
+        # Add mean line
+        mean_val = values.mean()
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, 
+                  label=f'Mean = {mean_val:.2f}')
+        
+        # Formatting
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel('Count of Molecules')
+        ax.set_title(title)
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        ax.legend()
+        plt.tight_layout()
+        
+        return fig, ax
     
-    def plot_correlation_analysis(self, df: pd.DataFrame) -> None:
-        """Create pairplot for correlation analysis"""
-        try:
-            cols = ['SA_score', 'SCScore', 'NP_score', 'len_smiles']
-            available_cols = [col for col in cols if col in df.columns]
-            
-            if len(available_cols) < 2:
-                print("Warning: Insufficient columns for correlation analysis")
-                return
-            
-            data = df[available_cols].dropna()
-            
-            if len(data) < 5:  # Need at least 5 points for meaningful correlation
-                print(f"Warning: Insufficient data points for correlation analysis (need ≥5, got {len(data)})")
-                return
-            
-            sns.set_style('ticks')
-            g = sns.pairplot(data, diag_kind='kde', plot_kws={'alpha': 0.6, 's': 30})
-            g.fig.suptitle('Molecular Properties Correlation Analysis', y=1.02, fontsize=16)
-            
-            plt.tight_layout()
-            plt.show()
-            
-            # Save the figure
-            g.savefig(
-                self.context.get_filepath('correlation_pairplot'),
-                dpi=self.config.DPI,
-                bbox_inches='tight'
-            )
-            
-        except Exception as e:
-            print(f"Error creating correlation analysis: {e}")
-            raise
-        finally:
-            plt.close('all')
-    
-    def plot_chemical_space_tsne(self, fps: List, synth_df: pd.DataFrame) -> None:
-        """Create t-SNE plot of chemical space with robust parameter selection"""
-        try:
-            n_samples = len(fps)
-            if n_samples < 5:  # Need at least 5 samples for meaningful t-SNE
-                print(f"Warning: Need at least 5 samples for t-SNE (got {n_samples})")
-                return
-            
-            # Dynamic perplexity with better bounds - must be less than n_samples
-            perplexity = min(30, max(2, min(n_samples // 3, n_samples - 1)))
-            
-            # Ensure perplexity is valid
-            if perplexity >= n_samples:
-                perplexity = max(1, n_samples - 1)
-            
-            print(f"Running t-SNE with {n_samples} samples, perplexity={perplexity}")
-            
-            tsne = TSNE(
-                n_components=2, 
-                random_state=42, 
-                perplexity=perplexity,
-                n_iter=300,  # Reduced iterations for small datasets
-                init='pca'
-            )
-            
-            tsne_results = tsne.fit_transform(np.stack(fps))
-            
-            fig, ax = plt.subplots(figsize=self.config.FIGURE_SIZE)
-            
-            # Use SA_score for coloring if available
-            if 'SA_score' in synth_df.columns:
-                colors = synth_df['SA_score'].values
-                scatter = ax.scatter(
-                    tsne_results[:, 0], tsne_results[:, 1], 
-                    c=colors, cmap='viridis', alpha=0.7, s=50, edgecolors='black', linewidth=0.5
-                )
-                cbar = plt.colorbar(scatter, ax=ax)
-                cbar.set_label('SA_score', fontsize=12)
-            else:
-                ax.scatter(tsne_results[:, 0], tsne_results[:, 1], alpha=0.7, s=50)
-            
-            ax.set_xlabel('t-SNE Dimension 1', fontsize=12)
-            ax.set_ylabel('t-SNE Dimension 2', fontsize=12)
-            ax.set_title('Chemical Space Visualization (t-SNE)', fontsize=14, fontweight='bold')
-            ax.grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            plt.show()
-            
-            self._save_plot(fig, 'chemical_space_tsne')
-            
-        except Exception as e:
-            print(f"Error creating t-SNE plot: {e}")
-            # Don't re-raise the exception to avoid breaking the entire pipeline
-        finally:
-            plt.close('all')
-    
-    def plot_tanimoto_similarity_heatmap(self, similarity_csv_path: str, 
-                                        similarity_threshold: float = 0.5) -> None:
-        """
-        Create a lower triangular Tanimoto similarity heatmap from pre-calculated similarities.
+    def plot_smiles_length_distribution(self, df: pd.DataFrame) -> None:
+        """Plot SMILES length distribution with histogram and KDE."""
+        fig, ax = self._create_histogram_base(
+            df, 'len_smiles', 'Histogram of SMILES Length', 'SMILES length', 'green'
+        )
+        plt.show()
+        self._save_figure('len_smiles')
         
-        Args:
-            similarity_csv_path: Path to CSV file with columns: mol_1, smi_1, mol_2, smi_2, tanimoto
-            similarity_threshold: Threshold for displaying labels (default: 0.5)
-        """
-        try:
-            # Load similarity data from CSV
-            print(f"Loading similarity data from: {similarity_csv_path}")
-            similarity_df = pd.read_csv(similarity_csv_path)
-            
-            # Validate required columns
-            required_cols = ['mol_1', 'smi_1', 'mol_2', 'smi_2', 'tanimoto']
-            missing_cols = [col for col in required_cols if col not in similarity_df.columns]
-            if missing_cols:
-                raise ValueError(f"Missing required columns in CSV: {missing_cols}")
-            
-            # Get unique molecule filenames
-            all_molecules = set(similarity_df['mol_1'].tolist() + similarity_df['mol_2'].tolist())
-            filenames = sorted(list(all_molecules))
-            n_mols = len(filenames)
-            
-            if n_mols < 2:
-                print("Warning: Need at least 2 molecules for similarity analysis")
-                return
-            
-            if n_mols > 100:
-                print(f"Warning: Large dataset ({n_mols} molecules). Heatmap may be difficult to read.")
-            
-            print(f"Creating similarity matrix for {n_mols} molecules from {len(similarity_df)} similarity pairs...")
-            
-            # Create filename to index mapping
-            filename_to_idx = {filename: idx for idx, filename in enumerate(filenames)}
-            
-            # Initialize similarity matrix
-            similarity_matrix = np.zeros((n_mols, n_mols))
-            
-            # Fill similarity matrix from CSV data
-            for _, row in similarity_df.iterrows():
-                mol1, mol2, similarity = row['mol_1'], row['mol_2'], row['tanimoto']
-                
-                if mol1 in filename_to_idx and mol2 in filename_to_idx:
-                    i, j = filename_to_idx[mol1], filename_to_idx[mol2]
-                    similarity_matrix[i, j] = similarity
-                    similarity_matrix[j, i] = similarity  # Make symmetric
-            
-            # Set diagonal to 1.0 (self-similarity)
-            for i in range(n_mols):
-                similarity_matrix[i, i] = 1.0
-            
-            # Create lower triangular mask
-            mask = np.tril(np.ones_like(similarity_matrix, dtype=bool))
-            
-            # Create the plot
-            fig, ax = plt.subplots(figsize=(max(8, n_mols * 0.3), max(8, n_mols * 0.3)))
-            
-            # Apply mask and create heatmap
-            masked_matrix = np.where(mask, similarity_matrix, np.nan)
-            im = ax.imshow(masked_matrix, cmap='viridis', vmin=0, vmax=1, aspect='equal')
-            
-            # Add colorbar
-            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-            cbar.set_label('Tanimoto Similarity', fontsize=12)
-            
-            # Set title and labels
-            ax.set_title('Lower Triangular Tanimoto Similarity Heatmap', 
-                        fontsize=14, fontweight='bold', pad=20)
-            ax.set_xlabel('Molecule Index', fontsize=12)
-            ax.set_ylabel('Molecule Index', fontsize=12)
-            
-            # Find high-similarity pairs for selective labeling
-            high_similarity_pairs = np.argwhere(
-                (similarity_matrix >= similarity_threshold) & 
-                mask & 
-                (np.arange(similarity_matrix.shape[0])[:, None] > np.arange(similarity_matrix.shape[1]))
-            )
-            
-            # Prepare tick labels
-            n_labels = len(filenames)
-            xtick_labels = ['' for _ in range(n_labels)]
-            ytick_labels = ['' for _ in range(n_labels)]
-            
-            # Set labels only for high-similarity pairs
-            for i, j in high_similarity_pairs:
-                # Clean filename for display (remove extension and truncate if too long)
-                clean_filename_i = self._clean_filename_for_display(filenames[i])
-                clean_filename_j = self._clean_filename_for_display(filenames[j])
-                
-                ytick_labels[i] = clean_filename_i
-                xtick_labels[j] = clean_filename_j
-            
-            # Set ticks and labels
-            ax.set_xticks(range(n_labels))
-            ax.set_yticks(range(n_labels))
-            ax.set_xticklabels(xtick_labels, rotation=45, ha='right', fontsize=8)
-            ax.set_yticklabels(ytick_labels, rotation=0, ha='right', fontsize=8)
-            
-            # Add statistics annotation
-            stats_text = self._calculate_similarity_stats(similarity_matrix, mask)
-            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
-                   fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            plt.tight_layout()
-            plt.show()
-            
-            self._save_plot(fig, 'tanimoto_similarity_heatmap')
-            
-            # Also create a summary plot of similarity distribution
-            self._plot_similarity_distribution(similarity_matrix, mask)
-            
-        except Exception as e:
-            print(f"Error creating Tanimoto similarity heatmap: {e}")
-            raise
-        finally:
-            plt.close('all')
-    
-    def _clean_filename_for_display(self, filename: str, max_length: int = 20) -> str:
-        """Clean and truncate filename for display in plots"""
-        # Remove file extension
-        name = filename.split('.')[0] if '.' in filename else filename
+    def plot_smiles_length_pie_chart(self, df: pd.DataFrame) -> None:
+        """Plot SMILES length distribution as pie chart."""
+        bins = [0, 20, 40, 60, 80, float('inf')]
+        labels = ['≤20 chars', '21-40 chars', '41-60 chars', '61-80 chars', '>80 chars']
         
-        # Truncate if too long
-        if len(name) > max_length:
-            name = name[:max_length-3] + '...'
+        df_temp = df.copy()
+        df_temp['len_bin'] = pd.cut(df_temp['len_smiles'], bins=bins, labels=labels, 
+                                   right=True, include_lowest=True)
+        counts = df_temp['len_bin'].value_counts().reindex(labels)
         
-        return name
-    
-    def _calculate_similarity_stats(self, similarity_matrix: np.ndarray, mask: np.ndarray) -> str:
-        """Calculate and format similarity statistics"""
-        # Get lower triangular values (excluding diagonal)
-        lower_tri_mask = mask & (similarity_matrix != 1.0)
-        similarities = similarity_matrix[lower_tri_mask]
+        plt.figure(figsize=self.LARGE_FIGURE_SIZE)
+        plt.pie(counts, labels=counts.index, autopct='%1.1f%%', startangle=140,
+               colors=plt.cm.Set2.colors)
+        plt.title('SMILES Length Distribution')
+        plt.axis('equal')
+        plt.show()
+        self._save_figure('len_smiles_pie')
         
-        if len(similarities) == 0:
-            return "No similarity data"
+    def plot_synthesizability_score(self, df: pd.DataFrame, score_type: str) -> None:
+        """Plot synthesizability scores (SA_score, SCScore, or NP_score)."""
+        config = {
+            'SA_score': {'range': (1, 10), 'bins': np.arange(0.75, 10.25, 0.5), 
+                        'color': 'orange', 'title': 'Histogram of SA_Score (centered bins 1-10)'},
+            'SCScore': {'range': (1, 5), 'bins': np.arange(0.75, 5.25, 0.25), 
+                       'color': 'blue', 'title': 'Histogram of SCScore'},
+            'NP_score': {'range': (-5, 5), 'bins': np.arange(-5.75, 5.25, 0.5), 
+                        'color': 'pink', 'title': 'Histogram of NP_score'}
+        }
         
-        mean_sim = np.mean(similarities)
-        median_sim = np.median(similarities)
-        std_sim = np.std(similarities)
-        max_sim = np.max(similarities)
-        min_sim = np.min(similarities)
-        
-        # Count high similarity pairs
-        high_sim_count = np.sum(similarities >= 0.7)
-        total_pairs = len(similarities)
-        
-        stats_text = (
-            f"Similarity Statistics:\n"
-            f"Mean: {mean_sim:.3f}\n"
-            f"Median: {median_sim:.3f}\n"
-            f"Std: {std_sim:.3f}\n"
-            f"Range: {min_sim:.3f} - {max_sim:.3f}\n"
-            f"High similarity (≥0.7): {high_sim_count}/{total_pairs}"
+        if score_type not in config:
+            raise ValueError(f"Unknown score type: {score_type}")
+            
+        cfg = config[score_type]
+        fig, ax = self._create_histogram_base(
+            df, score_type, cfg['title'], score_type, cfg['color'], 
+            bins=cfg['bins'], x_range=cfg['range']
         )
         
-        return stats_text
-    
-    def _plot_similarity_distribution(self, similarity_matrix: np.ndarray, mask: np.ndarray) -> None:
-        """Create a distribution plot of Tanimoto similarities"""
+        # Add molecule inset for best score
+        self._add_molecule_inset(fig, ax, df, score_type, minimize=True)
+        
+        plt.show()
+        self._save_figure(score_type.lower().replace('_', ''))
+        
+    def plot_tsne_chemical_space(self, fps: List, synth_df: pd.DataFrame) -> None:
+        """Plot t-SNE visualization of chemical space."""
+        n_samples = len(fps)
+        
+        # Dynamic perplexity calculation
+        if n_samples <= 5:
+            perplexity = max(2, n_samples - 1)
+        elif n_samples < 50:
+            perplexity = max(5, n_samples // 3)
+        else:
+            perplexity = 30
+        perplexity = min(perplexity, n_samples - 1)
+        
+        tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity)
+        tsne_results = tsne.fit_transform(np.stack(fps))
+        
+        plt.figure(figsize=self.LARGE_FIGURE_SIZE)
+        scatter = plt.scatter(tsne_results[:, 0], tsne_results[:, 1], 
+                            c=synth_df['SA_score'].values, cmap='viridis', 
+                            alpha=0.7, s=30)
+        plt.xlabel('t-SNE 1')
+        plt.ylabel('t-SNE 2')
+        plt.title('t-SNE of Chemical Space (colored by SA_score)')
+        plt.colorbar(scatter, label='SA_score')
+        plt.tight_layout()
+        plt.show()
+        self._save_figure('tSNE')
+        
+    def plot_synthesizability_comparison(self, df: pd.DataFrame, plot_type: str = 'boxplot') -> None:
+        """Plot comparison of synthesizability scores."""
+        # Normalize scores to 0-1 range
+        normalized_data = {
+            'SA_score': (df['SA_score'] - 1) / 9,
+            'SCScore': (df['SCScore'] - 1) / 4,
+            'NP_score': (df['NP_score'] + 5) / 10
+        }
+        
+        data = [normalized_data[score].dropna().values for score in normalized_data]
+        labels = list(normalized_data.keys())
+        
+        fig, ax = plt.subplots(figsize=self.FIGURE_SIZE)
+        
+        if plot_type == 'boxplot':
+            self._create_boxplot(ax, data, labels)
+        elif plot_type == 'violinplot':
+            self._create_violinplot(ax, data, labels)
+        elif plot_type == 'hybrid':
+            self._create_hybrid_plot(ax, data, labels)
+        else:
+            raise ValueError(f"Unknown plot type: {plot_type}")
+            
+        plt.tight_layout()
+        plt.show()
+        self._save_figure(plot_type)
+        
+    def _create_boxplot(self, ax, data: List, labels: List[str]) -> None:
+        """Create boxplot of synthesizability scores."""
+        ax.boxplot(data, patch_artist=True, tick_labels=labels, showmeans=True,
+                  boxprops=dict(facecolor='lightgray', color='black'),
+                  medianprops=dict(color='red'),
+                  meanprops=dict(marker='o', markerfacecolor='blue', markeredgecolor='black'))
+        ax.set_ylabel('Normalized Score Value (0-1)')
+        ax.set_title('Boxplot of Normalized Synthesizability Scores')
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        
+    def _create_violinplot(self, ax, data: List, labels: List[str]) -> None:
+        """Create violin plot with statistical significance testing."""
+        # Statistical significance testing
+        sig_labels = self._add_significance_labels(data, labels)
+        
+        parts = ax.violinplot(data, showmeans=True, showmedians=True)
+        for i, pc in enumerate(parts['bodies']):
+            pc.set_facecolor(self.COLORS['synthesizability'][i])
+            pc.set_alpha(0.5)
+            
+        ax.set_xticks([1, 2, 3])
+        ax.set_xticklabels(sig_labels)
+        ax.set_ylabel('Normalized Score Value (0-1)')
+        ax.set_title('Violin Plot of Normalized Synthesizability Scores')
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        
+    def _create_hybrid_plot(self, ax, data: List, labels: List[str]) -> None:
+        """Create hybrid violin + bar plot with significance brackets."""
+        colors = self.COLORS['synthesizability']
+        
+        # Calculate means and errors
+        means = [np.mean(d) for d in data]
+        errors = [np.std(d, ddof=1) / np.sqrt(len(d)) for d in data]
+        
+        # Violin plot base
+        parts = ax.violinplot(data, showmeans=False, showmedians=False, widths=0.8)
+        for i, pc in enumerate(parts['bodies']):
+            pc.set_facecolor(colors[i])
+            pc.set_alpha(0.4)
+            pc.set_edgecolor('black')
+            
+        # Bar plot overlay
+        positions = np.arange(1, 4)
+        ax.bar(positions, means, yerr=errors, color=colors, alpha=0.8, 
+              capsize=6, width=0.5, edgecolor='black', linewidth=0.8)
+        
+        # Add significance brackets
+        self._add_significance_brackets(ax, data)
+        
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels)
+        ax.set_ylabel('Normalized Score Value (0–1)')
+        ax.set_title('Hybrid Plot of Synthesizability Scores')
+        ax.grid(axis='y', linestyle='--', alpha=0.6)
+        
+    def _add_significance_labels(self, data: List, labels: List[str]) -> List[str]:
+        """Add significance markers to labels based on Mann-Whitney U tests."""
+        sig_labels = labels.copy()
+        alpha = 0.05 / 3  # Bonferroni correction
+        pairs = [(0, 1), (0, 2), (1, 2)]
+        sig_matrix = [False] * 3
+        
+        for i, j in pairs:
+            _, p = mannwhitneyu(data[i], data[j], alternative='two-sided')
+            if p < alpha:
+                sig_matrix[i] = sig_matrix[j] = True
+                
+        for i in range(3):
+            if sig_matrix[i]:
+                sig_labels[i] += ' ***'
+                
+        return sig_labels
+        
+    def _add_significance_brackets(self, ax, data: List) -> None:
+        """Add significance brackets to hybrid plot."""
+        pairs = [(0, 1), (0, 2), (1, 2)]
+        sig_results = []
+        
+        for i, j in pairs:
+            _, p = mannwhitneyu(data[i], data[j], alternative='two-sided')
+            if p < 0.05:
+                sig_results.append(((i, j), p))
+                
+        if not sig_results:
+            return
+            
+        y_max = max(max(d) for d in data)
+        y_range = y_max - min(min(d) for d in data)
+        y_offset = y_range * 0.08
+        height_step = y_range * 0.12
+        bracket_y = y_max + y_offset
+        
+        def get_sig_stars(p):
+            if p <= 0.001: return '***'
+            elif p <= 0.01: return '**'
+            elif p <= 0.05: return '*'
+            return ''
+            
+        for idx, ((i, j), p) in enumerate(sig_results):
+            x1, x2 = i + 1, j + 1
+            y = bracket_y + idx * height_step
+            
+            ax.plot([x1, x1, x2, x2], [y, y + y_offset, y + y_offset, y],
+                   lw=1.5, c='k', alpha=0.5)
+            
+            label = f'p = {p:.3g} {get_sig_stars(p)}'
+            ax.text((x1 + x2) / 2, y + y_offset * 1.1, label,
+                   ha='center', va='bottom', fontsize=10, color='k', alpha=0.5)
+                   
+    def plot_property_pairplot(self, df: pd.DataFrame) -> None:
+        """Create pairplot of molecular properties."""
+        cols = ['SA_score', 'SCScore', 'NP_score', 'len_smiles']
+        data = df[cols].dropna()
+        
+        sns.set(style='ticks', color_codes=True)
+        g = sns.pairplot(data, diag_kind='kde', plot_kws={'alpha': 0.6, 's': 30})
+        g.fig.suptitle('Pairplot of Synthesizability and SMILES Length', y=1.02)
+        plt.tight_layout()
+        plt.show()
+        self._save_figure('pairplot')
+        
+    def plot_lipinski_violations(self, df: pd.DataFrame) -> None:
+        """Plot Lipinski rule violations as pie chart."""
+        violation_counts = df['failed'].fillna('').apply(
+            lambda x: 0 if x.strip() == '' else len(x.split(';'))
+        )
+        violation_summary = violation_counts.value_counts().sort_index()
+        
+        plt.figure(figsize=self.LARGE_FIGURE_SIZE)
+        plt.pie(violation_summary,
+               labels=[f'{i} rule{"s" if i != 1 else ""} violated' for i in violation_summary.index],
+               autopct='%1.1f%%', startangle=140, colors=plt.cm.Pastel1.colors)
+        plt.title('Lipinski\'s Rule Violations per Molecule')
+        plt.axis('equal')
+        plt.show()
+        self._save_figure('lipinski_violations')
+        
+    def create_score_pie_chart(self, df: pd.DataFrame, score_type: str) -> None:
+        """Create pie chart for score distributions."""
+        config = {
+            'SA_score': {
+                'bins': [-float('inf'), 2, 3, 6.5, float('inf')],
+                'labels': ['SA_score ≤ 2 (Very easy)', '2 < SA_score ≤ 3 (Easy)',
+                          '3 < SA_score ≤ 6.5 (Moderate)', 'SA_score > 6.5 (Hard)'],
+                'title': 'Synthetic Accessibility (SA_score) Distribution'
+            },
+            'SCScore': {
+                'bins': [-float('inf'), 2, 3, 4.5, float('inf')],
+                'labels': ['SCScore ≤ 1 (Very easy)', '1 < SCScore ≤ 3 (Easy)',
+                          '3 < SCScore ≤ 4.5 (Moderate)', 'SCScore > 4.5 (Hard)'],
+                'title': 'Synthetic Complexity (SCScore) Distribution'
+            },
+            'NP_score': {
+                'bins': [-float('inf'), -2, 0, 2, float('inf')],
+                'labels': ['NP_score ≤ -2 (Very synthetic-like)', '-2 < NP_score ≤ 0 (Balanced)',
+                          '0 < NP_score ≤ 2 (Natural-like)', 'NP_score > 2 (Very natural-like)'],
+                'title': 'Natural Product-likeness (NP_score) Distribution'
+            }
+        }
+        
+        if score_type not in config:
+            raise ValueError(f"Unknown score type: {score_type}")
+            
+        cfg = config[score_type]
+        df_temp = df.copy()
+        df_temp['score_bin'] = pd.cut(df_temp[score_type], bins=cfg['bins'], 
+                                     labels=cfg['labels'])
+        counts = df_temp['score_bin'].value_counts().reindex(cfg['labels'])
+        
+        plt.figure(figsize=self.LARGE_FIGURE_SIZE)
+        plt.pie(counts, labels=counts.index, autopct='%1.1f%%', startangle=140,
+               colors=plt.cm.Set3.colors)
+        plt.title(cfg['title'])
+        plt.axis('equal')
+        plt.show()
+        self._save_figure(f'{score_type.lower().replace("_", "")}_pie')
+        
+    def generate_all_plots(self, synth_df: pd.DataFrame, lipinski_df: pd.DataFrame, 
+                          tanimoto_inter_df: pd.DataFrame, fps: List,
+                          tanimoto_intra_df: Optional[pd.DataFrame] = None) -> None:
+        """Generate all visualization plots."""
+        print("Generating molecular property visualizations...")
+        
+        # SMILES length plots
+        self.plot_smiles_length_distribution(synth_df)
+        self.plot_smiles_length_pie_chart(synth_df)
+        
+        # Synthesizability score plots
+        for score_type in ['SA_score', 'SCScore', 'NP_score']:
+            self.plot_synthesizability_score(synth_df, score_type)
+            self.create_score_pie_chart(synth_df, score_type)
+            
+        # Comparison plots
+        self.plot_synthesizability_comparison(synth_df, 'boxplot')
+        self.plot_synthesizability_comparison(synth_df, 'violinplot')
+        self.plot_synthesizability_comparison(synth_df, 'hybrid')
+        
+        # Chemical space and property relationships
+        self.plot_tsne_chemical_space(fps, synth_df)
+        self.plot_property_pairplot(synth_df)
+        
+        # Lipinski violations
+        self.plot_lipinski_violations(lipinski_df)
+        
+        # Tanimoto similarity analysis
+        print("Generating Tanimoto similarity visualizations...")
         try:
-            # Get lower triangular values (excluding diagonal)
-            lower_tri_mask = mask & (similarity_matrix != 1.0)
-            similarities = similarity_matrix[lower_tri_mask]
+            if not tanimoto_inter_df.empty:
+                self.plot_tanimoto_similarity_heatmap(tanimoto_inter_df, 'inter')
+                self.plot_tanimoto_distribution(tanimoto_inter_df, 'inter')
+        except Exception as e:
+            print(f"Warning: Failed to generate inter-molecular Tanimoto plots: {e}")
+        
+        try:
+            if tanimoto_intra_df is not None and not tanimoto_intra_df.empty:
+                self.plot_tanimoto_similarity_heatmap(tanimoto_intra_df, 'intra')
+                self.plot_tanimoto_distribution(tanimoto_intra_df, 'intra')
+        except Exception as e:
+            print(f"Warning: Failed to generate intra-molecular Tanimoto plots: {e}")
             
-            if len(similarities) == 0:
-                print("Warning: No similarity data for distribution plot")
+        # Comparison plot if both datasets available
+        try:
+            if (not tanimoto_inter_df.empty and 
+                tanimoto_intra_df is not None and not tanimoto_intra_df.empty):
+                self.plot_tanimoto_summary_comparison(tanimoto_inter_df, tanimoto_intra_df)
+            elif not tanimoto_inter_df.empty:
+                self.plot_tanimoto_summary_comparison(tanimoto_inter_df)
+        except Exception as e:
+            print(f"Warning: Failed to generate Tanimoto comparison plot: {e}")
+        
+        print(f"All plots saved to {self.image_dir}")
+    
+    def plot_tanimoto_similarity_heatmap(self, tanimoto_df: pd.DataFrame, 
+                                        similarity_type: str = 'inter',
+                                        threshold: float = 0.5,
+                                        show_labels: bool = True) -> None:
+        """
+        Plot Tanimoto similarity as a heatmap with selective labeling.
+        
+        Args:
+            tanimoto_df: DataFrame containing similarity matrix and filenames
+            similarity_type: Type of similarity ('inter' or 'intra')
+            threshold: Threshold for displaying labels (default: 0.5)
+            show_labels: Whether to show filename labels for high-similarity pairs
+        """
+        try:
+            # Extract similarity matrix and filenames from DataFrame
+            mat, filenames1, filenames2 = self._extract_similarity_data(tanimoto_df)
+            
+            if mat is None:
+                print(f"Warning: Could not extract similarity matrix from {similarity_type} DataFrame")
                 return
+                
+            self._create_tanimoto_heatmap(mat, filenames1, filenames2, similarity_type, threshold, show_labels)
             
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        except Exception as e:
+            print(f"Error creating {similarity_type} Tanimoto heatmap: {e}")
+            print(f"DataFrame shape: {tanimoto_df.shape}")
+            print(f"DataFrame columns: {list(tanimoto_df.columns)}")
             
-            # Histogram with KDE
-            ax1.hist(similarities, bins=30, density=True, alpha=0.7, color='skyblue', 
-                    edgecolor='black', label='Histogram')
-            
-            # Add KDE if possible
+    def _extract_similarity_data(self, tanimoto_df: pd.DataFrame) -> Tuple[Optional[np.ndarray], List[str], List[str]]:
+        """Extract similarity matrix and filenames from DataFrame with robust error handling."""
+        mat = None
+        filenames1 = filenames2 = []
+        
+        # Method 1: Try to extract from pairwise similarity data
+        if 'tanimoto' in tanimoto_df.columns or 'similarity' in tanimoto_df.columns:
             try:
-                if len(similarities) > 2 and np.std(similarities) > 1e-10:
-                    kde = gaussian_kde(similarities)
-                    x_vals = np.linspace(0, 1, 200)
-                    kde_vals = kde(x_vals)
-                    ax1.plot(x_vals, kde_vals, color='red', lw=2, label='KDE')
-            except Exception:
-                pass
+                mat, filenames1, filenames2 = self._build_matrix_from_pairs(tanimoto_df)
+                if mat is not None:
+                    return mat, filenames1, filenames2
+            except Exception as e:
+                print(f"Failed to build matrix from pairs: {e}")
+        
+        # Method 2: Try serialized matrix
+        if 'similarity_matrix' in tanimoto_df.columns:
+            try:
+                import ast
+                mat_data = []
+                for row in tanimoto_df['similarity_matrix']:
+                    if isinstance(row, str):
+                        parsed = ast.literal_eval(row)
+                        mat_data.append(parsed)
+                    else:
+                        mat_data.append(row)
+                mat = np.array(mat_data, dtype=float)
+            except Exception as e:
+                print(f"Failed to parse serialized matrix: {e}")
+        
+        # Method 3: Try matrix columns
+        if mat is None:
+            matrix_cols = [col for col in tanimoto_df.columns if col.startswith('mol_')]
+            if matrix_cols:
+                try:
+                    mat = tanimoto_df[matrix_cols].values.astype(float)
+                except Exception as e:
+                    print(f"Failed to convert matrix columns to float: {e}")
+                    # Try to handle mixed data types
+                    try:
+                        mat_data = []
+                        for _, row in tanimoto_df[matrix_cols].iterrows():
+                            row_data = []
+                            for val in row:
+                                if pd.isna(val):
+                                    row_data.append(0.0)
+                                elif isinstance(val, (int, float)):
+                                    row_data.append(float(val))
+                                elif isinstance(val, str):
+                                    try:
+                                        row_data.append(float(val))
+                                    except ValueError:
+                                        row_data.append(0.0)
+                                else:
+                                    row_data.append(0.0)
+                            mat_data.append(row_data)
+                        mat = np.array(mat_data, dtype=float)
+                    except Exception as e2:
+                        print(f"Failed to manually convert matrix data: {e2}")
+        
+        # Get filenames
+        if 'filename1' in tanimoto_df.columns and 'filename2' in tanimoto_df.columns:
+            filenames1 = tanimoto_df['filename1'].unique().tolist()
+            filenames2 = tanimoto_df['filename2'].unique().tolist()
+        elif 'filename' in tanimoto_df.columns:
+            filenames1 = filenames2 = tanimoto_df['filename'].unique().tolist()
+        elif mat is not None:
+            # Generate default filenames based on matrix size
+            n = mat.shape[0]
+            filenames1 = filenames2 = [f'mol_{i}' for i in range(n)]
+        
+        return mat, filenames1, filenames2
+        
+    def _build_matrix_from_pairs(self, df: pd.DataFrame) -> Tuple[Optional[np.ndarray], List[str], List[str]]:
+        """Build similarity matrix from pairwise similarity data."""
+        similarity_col = 'tanimoto_similarity' if 'tanimoto' in df.columns else 'similarity'
+        
+        if 'filename1' in df.columns and 'filename2' in df.columns:
+            # Pairwise format
+            filenames1 = sorted(df['filename1'].unique())
+            filenames2 = sorted(df['filename2'].unique())
             
-            ax1.axvline(np.mean(similarities), color='orange', linestyle='--', 
-                       linewidth=2, label=f'Mean = {np.mean(similarities):.3f}')
-            ax1.set_xlabel('Tanimoto Similarity')
-            ax1.set_ylabel('Density')
-            ax1.set_title('Distribution of Tanimoto Similarities')
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
+            n1, n2 = len(filenames1), len(filenames2)
+            mat = np.zeros((n2, n1))  # Note: transposed for proper indexing
             
-            # Box plot
-            box_data = [similarities]
-            bp = ax2.boxplot(box_data, patch_artist=True, labels=['All Pairs'])
-            bp['boxes'][0].set_facecolor('lightblue')
-            bp['boxes'][0].set_alpha(0.7)
+            filename1_to_idx = {name: i for i, name in enumerate(filenames1)}
+            filename2_to_idx = {name: i for i, name in enumerate(filenames2)}
             
-            ax2.set_ylabel('Tanimoto Similarity')
-            ax2.set_title('Box Plot of Tanimoto Similarities')
-            ax2.grid(True, alpha=0.3)
-            
-            # Add summary statistics
-            stats_text = (
-                f"n = {len(similarities)}\n"
-                f"μ = {np.mean(similarities):.3f}\n"
-                f"σ = {np.std(similarities):.3f}\n"
-                f"Q1 = {np.percentile(similarities, 25):.3f}\n"
-                f"Q3 = {np.percentile(similarities, 75):.3f}"
+            for _, row in df.iterrows():
+                i = filename2_to_idx.get(row['filename2'])
+                j = filename1_to_idx.get(row['filename1'])
+                if i is not None and j is not None:
+                    try:
+                        mat[i, j] = float(row[similarity_col])
+                    except (ValueError, TypeError):
+                        mat[i, j] = 0.0
+                        
+            return mat, filenames1, filenames2
+        
+        return None, [], []
+        
+    def _create_tanimoto_heatmap(self, mat: np.ndarray, filenames1: List[str], 
+                                filenames2: List[str], similarity_type: str,
+                                threshold: float, show_labels: bool) -> None:
+        """Create the actual Tanimoto similarity heatmap."""
+        # Create mask for lower triangle (for inter-molecular comparisons)
+        mask = np.tril(np.ones_like(mat, dtype=bool))
+        
+        plt.figure(figsize=(10, 8))
+        
+        # Apply mask to show only lower triangle
+        masked_mat = np.where(mask, mat, np.nan)
+        
+        # Create heatmap
+        im = plt.imshow(masked_mat, cmap='viridis', vmin=0, vmax=1, aspect='auto')
+        plt.colorbar(im, label='Tanimoto Similarity', shrink=0.8)
+        
+        plt.title(f'{"Inter" if similarity_type == "inter" else "Intra"}-molecular Tanimoto Similarity Heatmap')
+        plt.xlabel('Molecule Index')
+        plt.ylabel('Molecule Index')
+        
+        if show_labels and len(filenames1) < 50:  # Only show labels for manageable number of molecules
+            # Find high-scoring pairs
+            high_pairs = np.argwhere(
+                (mat >= threshold) & mask & 
+                (np.arange(mat.shape[0])[:, None] > np.arange(mat.shape[1]))
             )
             
-            ax2.text(0.02, 0.98, stats_text, transform=ax2.transAxes, 
-                    fontsize=9, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            # Initialize empty label lists
+            n_labels1, n_labels2 = len(filenames1), len(filenames2)
+            xtick_labels = ['' for _ in range(n_labels1)]
+            ytick_labels = ['' for _ in range(n_labels2)]
+            
+            # Set labels only for high-similarity pairs
+            for i, j in high_pairs:
+                if i < len(filenames2) and j < len(filenames1):
+                    ytick_labels[i] = filenames2[i]
+                    xtick_labels[j] = filenames1[j]
+            
+            # Apply tick labels
+            plt.xticks(
+                ticks=range(n_labels1),
+                labels=xtick_labels,
+                rotation=45, ha='right', fontsize=7
+            )
+            plt.yticks(
+                ticks=range(n_labels2),
+                labels=ytick_labels,
+                rotation=0, ha='right', fontsize=7
+            )
+        
+        plt.tight_layout()
+        plt.show()
+        self._save_figure(f'tanimoto_heatmap_{similarity_type}')
+        
+    def plot_tanimoto_distribution(self, tanimoto_df: pd.DataFrame, 
+                                  similarity_type: str = 'inter') -> None:
+        """
+        Plot distribution of Tanimoto similarity values.
+        
+        Args:
+            tanimoto_df: DataFrame containing similarity values
+            similarity_type: Type of similarity ('inter' or 'intra')
+        """
+        try:
+            # Extract similarity values
+            similarities = self._extract_similarity_values(tanimoto_df)
+            
+            if similarities is None or len(similarities) == 0:
+                print(f"Warning: No similarity values found in {similarity_type} DataFrame")
+                return
+            
+            # Create histogram
+            fig, ax = self._create_histogram_base(
+                pd.DataFrame({'tanimoto_similarity': similarities}),
+                'tanimoto_similarity',
+                f'Distribution of {similarity_type.title()}-molecular Tanimoto Similarities',
+                'Tanimoto Similarity',
+                'skyblue',
+                bins=np.linspace(0, 1, 21)  # 20 bins from 0 to 1
+            )
+            
+            # Add statistics text box
+            stats_text = f"""Statistics:
+Mean: {similarities.mean():.3f}
+Median: {similarities.median():.3f}
+Std: {similarities.std():.3f}
+Min: {similarities.min():.3f}
+Max: {similarities.max():.3f}
+N pairs: {len(similarities)}"""
+            
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=9,
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
             
             plt.tight_layout()
             plt.show()
-            
-            self._save_plot(fig, 'tanimoto_similarity_distribution')
+            self._save_figure(f'tanimoto_distribution_{similarity_type}')
             
         except Exception as e:
-            print(f"Error creating similarity distribution plot: {e}")
-        finally:
-            plt.close(fig)
-    
-    def _save_plot(self, fig: plt.Figure, plot_type: str) -> None:
-        """Save plot with consistent settings"""
-        try:
-            filepath = self.context.get_filepath(plot_type)
-            fig.savefig(filepath, dpi=self.config.DPI, bbox_inches='tight', facecolor='white')
-            print(f"Saved: {filepath}")
-        except Exception as e:
-            print(f"Warning: Could not save plot {plot_type}: {e}")
-    
-    def generate_comprehensive_report(self, synth_df: pd.DataFrame, 
-                                    lipinski_df: pd.DataFrame, fps: List, 
-                                    similarity_csv_path: Optional[str] = None) -> None:
-        """
-        Generate a comprehensive visualization report.
+            print(f"Error creating {similarity_type} Tanimoto distribution: {e}")
+            
+    def _extract_similarity_values(self, tanimoto_df: pd.DataFrame) -> Optional[pd.Series]:
+        """Extract similarity values from DataFrame with robust error handling."""
+        # Try direct similarity columns first
+        for col_name in ['tanimoto_similarity', 'similarity']:
+            if col_name in tanimoto_df.columns:
+                try:
+                    similarities = tanimoto_df[col_name].dropna()
+                    # Convert to numeric, handling string values
+                    similarities = pd.to_numeric(similarities, errors='coerce').dropna()
+                    if len(similarities) > 0:
+                        return similarities
+                except Exception as e:
+                    print(f"Failed to extract from {col_name}: {e}")
         
-        This is the main method that orchestrates all visualizations in a logical order.
+        # Try to extract from matrix format
+        try:
+            mat, _, _ = self._extract_similarity_data(tanimoto_df)
+            if mat is not None:
+                # Get upper triangle values (excluding diagonal)
+                triu_indices = np.triu_indices_from(mat, k=1)
+                similarities = mat[triu_indices]
+                similarities = pd.Series(similarities).dropna()
+                return similarities
+        except Exception as e:
+            print(f"Failed to extract from matrix: {e}")
+        
+        return None
+        
+    def plot_tanimoto_summary_comparison(self, tanimoto_inter_df: pd.DataFrame, 
+                                       tanimoto_intra_df: Optional[pd.DataFrame] = None) -> None:
+        """
+        Create comparison plot of inter vs intra-molecular similarities.
         
         Args:
-            synth_df: DataFrame with synthesizability scores
-            lipinski_df: DataFrame with Lipinski analysis results
-            fps: List of molecular fingerprints
-            similarity_csv_path: Optional path to CSV file with pre-calculated similarities
+            tanimoto_inter_df: DataFrame with inter-molecular similarities
+            tanimoto_intra_df: Optional DataFrame with intra-molecular similarities
         """
-        print("Starting Molecular Visualization Suite")
-        print(f"Dataset: {len(synth_df)} molecules")
-        print(f"Fingerprints: {len(fps)} molecules")
-        print(f"Lipinski data: {len(lipinski_df)} molecules")
-        print(f"Output directory: {self.context.image_dir}")
-        
-        # Check for data consistency
-        if len(synth_df) != len(fps):
-            print(f"Warning: Mismatch between synthesizability data ({len(synth_df)}) and fingerprints ({len(fps)})")
-        
-        if len(synth_df) < 3:
-            print(f"Note: Small dataset ({len(synth_df)} molecules) - some advanced plots may be skipped")
-        
-        # Track successful plots
-        successful_plots = []
-        failed_plots = []
-        
         try:
-            # 1. Distribution Analysis
-            print("\nGenerating distribution plots...")
-            for plot_func, plot_name in [
-                (lambda: self.plot_smiles_length(synth_df), "SMILES length"),
-                (lambda: self.plot_sa_score(synth_df), "SA score"),
-                (lambda: self.plot_sc_score(synth_df), "SC score"),
-                (lambda: self.plot_np_score(synth_df), "NP score")
-            ]:
+            fig, axes = plt.subplots(1, 2 if tanimoto_intra_df is not None else 1, 
+                                    figsize=(12 if tanimoto_intra_df is not None else 6, 5))
+            
+            if tanimoto_intra_df is None:
+                axes = [axes]
+            
+            # Extract similarities using robust method
+            datasets = [('Inter-molecular', tanimoto_inter_df, 'blue')]
+            if tanimoto_intra_df is not None:
+                datasets.append(('Intra-molecular', tanimoto_intra_df, 'red'))
+            
+            similarities_data = []
+            for name, df, color in datasets:
+                sims = self._extract_similarity_values(df)
+                if sims is not None and len(sims) > 0:
+                    similarities_data.append((name, sims, color))
+                else:
+                    print(f"Warning: No valid similarity data found for {name}")
+            
+            if not similarities_data:
+                print("Warning: No valid similarity data found for comparison")
+                return
+            
+            # Plot distributions
+            for i, (name, sims, color) in enumerate(similarities_data):
+                ax = axes[i] if len(axes) > 1 else axes[0]
+                
+                # Histogram
+                ax.hist(sims, bins=20, alpha=0.7, color=color, edgecolor='black', density=True)
+                
+                # KDE overlay
                 try:
-                    plot_func()
-                    successful_plots.append(plot_name)
-                except Exception as e:
-                    print(f"Warning: Failed to generate {plot_name} plot: {e}")
-                    failed_plots.append(plot_name)
+                    kde = gaussian_kde(sims)
+                    x_vals = np.linspace(0, 1, 100)
+                    ax.plot(x_vals, kde(x_vals), color='darkred' if 'red' in color else 'darkblue', lw=2)
+                except:
+                    pass
+                
+                # Statistics
+                mean_sim = sims.mean()
+                ax.axvline(mean_sim, color='red', linestyle='--', linewidth=2, 
+                          label=f'Mean = {mean_sim:.3f}')
+                
+                ax.set_xlabel('Tanimoto Similarity')
+                ax.set_ylabel('Density')
+                ax.set_title(f'{name} Similarities')
+                ax.legend()
+                ax.grid(axis='y', alpha=0.3)
             
-            # 2. Categorical Analysis
-            print("\nGenerating pie charts...")
-            for plot_func, plot_name in [
-                (lambda: self.plot_score_pie_chart(synth_df, ScoreType.SMILES_LENGTH), "SMILES length pie"),
-                (lambda: self.plot_score_pie_chart(synth_df, ScoreType.SA_SCORE), "SA score pie"),
-                (lambda: self.plot_score_pie_chart(synth_df, ScoreType.SC_SCORE), "SC score pie"),
-                (lambda: self.plot_score_pie_chart(synth_df, ScoreType.NP_SCORE), "NP score pie"),
-                (lambda: self.plot_lipinski_violations_pie(lipinski_df), "Lipinski violations pie")
-            ]:
+            # If both datasets, add comparison
+            if len(similarities_data) == 2:
                 try:
-                    plot_func()
-                    successful_plots.append(plot_name)
+                    # Statistical comparison
+                    _, p_value = mannwhitneyu(similarities_data[0][1], similarities_data[1][1], 
+                                            alternative='two-sided')
+                    
+                    fig.suptitle(f'Tanimoto Similarity Comparison (p-value: {p_value:.3e})', fontsize=14)
                 except Exception as e:
-                    print(f"Warning: Failed to generate {plot_name}: {e}")
-                    failed_plots.append(plot_name)
+                    print(f"Warning: Statistical comparison failed: {e}")
             
-            # 3. Statistical Comparison
-            print("\nGenerating statistical comparisons...")
-            for plot_func, plot_name in [
-                (lambda: self.plot_statistical_comparison(synth_df, 'boxplot'), "boxplot"),
-                (lambda: self.plot_statistical_comparison(synth_df, 'violin'), "violin plot")
-            ]:
-                try:
-                    plot_func()
-                    successful_plots.append(plot_name)
-                except Exception as e:
-                    print(f"Warning: Failed to generate {plot_name}: {e}")
-                    failed_plots.append(plot_name)
-            
-            # 4. Correlation Analysis
-            print("\nGenerating correlation analysis...")
-            try:
-                self.plot_correlation_analysis(synth_df)
-                successful_plots.append("correlation analysis")
-            except Exception as e:
-                print(f"Warning: Failed to generate correlation analysis: {e}")
-                failed_plots.append("correlation analysis")
-            
-            # 5. Chemical Space Visualization
-            print("\nGenerating chemical space visualization...")
-            try:
-                self.plot_chemical_space_tsne(fps, synth_df)
-                successful_plots.append("t-SNE plot")
-            except Exception as e:
-                print(f"Warning: Failed to generate t-SNE plot: {e}")
-                failed_plots.append("t-SNE plot")
-            
-            # 6. Molecular Similarity Analysis
-            if similarity_csv_path and Path(similarity_csv_path).exists():
-                print("\nGenerating molecular similarity analysis...")
-                try:
-                    self.plot_tanimoto_similarity_heatmap(similarity_csv_path)
-                    successful_plots.append("similarity heatmap")
-                except Exception as e:
-                    print(f"Warning: Failed to generate similarity analysis: {e}")
-                    failed_plots.append("similarity heatmap")
-            else:
-                print("\nSkipping similarity analysis (no CSV file provided or file not found)")
-                if similarity_csv_path:
-                    print(f"Expected CSV file: {similarity_csv_path}")
-            
-            # Summary
-            print(f"\nVisualization suite completed!")
-            print(f"Successful plots ({len(successful_plots)}): {', '.join(successful_plots)}")
-            if failed_plots:
-                print(f"Failed plots ({len(failed_plots)}): {', '.join(failed_plots)}")
-            print(f"All plots saved to: {self.context.image_dir}")
+            plt.tight_layout()
+            plt.show()
+            self._save_figure('tanimoto_comparison')
             
         except Exception as e:
-            print(f"\nCritical error during visualization generation: {e}")
-            # Don't re-raise to allow the pipeline to continue
+            print(f"Error creating Tanimoto comparison plot: {e}")
+
+    # ...existing code...
 
 
 def load_molecular_data(paths: PipelinePaths, epoch: int, num_gen: int, 
-                       known_binding_site: str, aurora: str, pdbid: str) -> Tuple:
-    """
-    Load molecular data and analysis results with comprehensive error handling.
+                       known_binding_site: str, pdbid: str, aurora: str):
+    """Load molecular data from various sources."""
+    if epoch != 0:
+        # Load generated molecules
+        sdf_folder = paths.graphbp_sdf_path(epoch, num_gen, known_binding_site, pdbid)
+        mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
+    else:
+        # Load Aurora inhibitors
+        aurora_data_file = paths.aurora_data_path(aurora)
+        mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
     
-    Returns:
-        Tuple containing mols, smiles, filenames, fps, synth_df, lipinski_df
-    """
+    # Load analysis results
+    synth_df = pd.read_csv(paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid))
+    lipinski_df = pd.read_csv(paths.lipinski_output_path(epoch, num_gen, known_binding_site, pdbid))
+    tanimoto_inter_df = pd.read_csv(paths.output_path(epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_inter'))
+    
+    # Try to load intra-molecular Tanimoto data if available
     try:
-        print(f"Loading molecular data for epoch {epoch}...")
-        
-        if epoch != 0:
-            # Load generated molecules
-            sdf_folder = paths.graphbp_sdf_path(epoch, num_gen, known_binding_site, pdbid)
-            print(f"Loading from SDF folder: {sdf_folder}")
-            mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
-        else:
-            # Load Aurora kinase inhibitors
-            known_inhib_file = paths.aurora_data_path(aurora)
-            print(f"Loading Aurora kinase data: {known_inhib_file}")
-            mols, smiles, filenames, fps = read_aurora_kinase_interactions(known_inhib_file)
-        
-        print(f"Loaded {len(mols)} molecules")
-        
-        # Load analysis results with graceful handling
-        synth_file = f'synthesizability_scores.csv'
-        synth_path = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, synth_file)
-        print(f"Loading synthesizability data: {synth_path}")
-        
-        try:
-            synth_df = pd.read_csv(synth_path)
-            print(f"Synthesizability data loaded: {len(synth_df)} records")
-        except FileNotFoundError:
-            print(f"Warning: Synthesizability file not found: {synth_path}")
-            # Create empty dataframe with expected columns
-            synth_df = pd.DataFrame(columns=['filename', 'smiles', 'SA_score', 'SCScore', 'NP_score', 'len_smiles'])
-        
-        lipinski_file = f'lipinski_pass.csv'
-        lipinski_path = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, lipinski_file)
-        print(f"Loading Lipinski data: {lipinski_path}")
-        
-        try:
-            lipinski_df = pd.read_csv(lipinski_path)
-            print(f"Lipinski data loaded: {len(lipinski_df)} records")
-        except FileNotFoundError:
-            print(f"Warning: Lipinski file not found: {lipinski_path}")
-            # Create empty dataframe with expected columns
-            lipinski_df = pd.DataFrame(columns=['filename', 'smiles', 'failed'])
-        
-        return mols, smiles, filenames, fps, synth_df, lipinski_df
-        
-    except FileNotFoundError as e:
-        print(f"Required data file not found: {e}")
-        print("Please ensure all analysis results are available before running graphics generation.")
-        raise
-    except Exception as e:
-        print(f"Error loading molecular data: {e}")
-        raise
+        tanimoto_intra_df = pd.read_csv(paths.output_path(epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_intra'))
+    except FileNotFoundError:
+        tanimoto_intra_df = None
+        print("Intra-molecular Tanimoto data not found, skipping...")
+    
+    return (mols, smiles, filenames, fps), synth_df, lipinski_df, tanimoto_inter_df, tanimoto_intra_df
 
 
 def main():
-    """
-    Main function to run the molecular visualization suite.
-    
-    This function provides a clean interface for generating comprehensive
-    molecular analysis visualizations with proper error handling and logging.
-    """
+    """Main execution function."""
+    # Setup paths and argument parsing
+    paths = PipelinePaths()
     parser = argparse.ArgumentParser(
-        description='Molecular Visualization Suite for Drug Discovery Pipeline',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python graphics.py --epoch 99 --num_gen 100 --aurora A
-  python graphics.py --epoch 0  # Analyze Aurora kinase inhibitors
-  python graphics.py --known_binding_site True --pdbid 4af3
-  python graphics.py --epoch 99 --similarity-csv similarity_data.csv  # Include similarity analysis
-        """
+        description='Comprehensive molecular visualization suite for CADD pipeline targeting Aurora kinases.'
     )
     
-    parser.add_argument('--num_gen', type=int, default=0, 
+    parser.add_argument('--num_gen', type=int, default=0,
                        help='Number of generated molecules (default: 0)')
-    parser.add_argument('--epoch', type=int, default=0, 
-                       help='Epoch number for model generation (0-99, default: 0)')
-    parser.add_argument('--known_binding_site', type=str, default='0', 
-                       help='Use binding site information (True/False, default: 0)')
+    parser.add_argument('--epoch', type=int, default=0,
+                       help='Model epoch for generation (0-99, default: 0)')
+    parser.add_argument('--known_binding_site', type=str, default='0',
+                       help='Use binding site information (default: "0")')
     parser.add_argument('--aurora', type=str, default='B', choices=['A', 'B'],
                        help='Aurora kinase type (default: B)')
-    parser.add_argument('--pdbid', type=str, default='4af3', 
-                       help='PDB ID for the target (default: 4af3)')
-    parser.add_argument('--similarity-csv', type=str, 
-                       help='Path to CSV file with pre-calculated Tanimoto similarities')
-    parser.add_argument('--config', type=str, help='Path to custom configuration file (optional)')
-    parser.add_argument('--output-dir', type=str, help='Custom output directory (optional)')
+    parser.add_argument('--pdbid', type=str, default='4af3',
+                       help='PDB ID for analysis (default: 4af3)')
+    parser.add_argument('--output_file', type=str, default=None,
+                       help='Custom output file path (optional)')
     
     args = parser.parse_args()
     
-    try:
-        # Initialize pipeline paths
-        print("🔧 Initializing pipeline configuration...")
-        paths = PipelinePaths()
-        
-        # Setup output directory
-        if args.output_dir:
-            image_dir = Path(args.output_dir) / 'images'
-        else:
-            results_dir = Path(paths.hope_box_results_path(
-                args.epoch, args.num_gen, args.known_binding_site, 
-                args.pdbid.lower(), 'dummy.csv'
-            )).parent
-            image_dir = results_dir / 'images'
-        
-        # Create plot context
-        context = PlotContext(
-            epoch=args.epoch,
-            num_gen=args.num_gen,
-            known_binding_site=args.known_binding_site,
-            aurora=args.aurora,
-            pdbid=args.pdbid.lower(),
-            image_dir=image_dir
-        )
-        
-        # Load custom configuration if provided
-        config = PlotConfiguration()
-        if args.config:
-            print(f"Loading custom configuration from {args.config}")
-            # Here you could add custom config loading logic
-        
-        # Load molecular data
-        print("Loading molecular data and analysis results...")
-        mols, smiles, filenames, fps, synth_df, lipinski_df = load_molecular_data(
-            paths, args.epoch, args.num_gen, args.known_binding_site, 
-            args.aurora, args.pdbid.lower()
-        )
-        
-        # Validate data
-        if len(mols) == 0:
-            print("Warning: No molecules found in the dataset")
-            print("Creating empty output directory and exiting gracefully...")
-            context.image_dir.mkdir(parents=True, exist_ok=True)
-            return 0
-        if len(synth_df) == 0:
-            print("Warning: No synthesizability data found")
-        if len(lipinski_df) == 0:
-            print("Warning: No Lipinski data found")
-        
-        # Create visualization suite
-        print("🎨 Initializing Molecular Visualization Suite...")
-        viz_suite = MolecularVisualizationSuite(context, config)
-        
-        # Generate comprehensive report
-        viz_suite.generate_comprehensive_report(synth_df, lipinski_df, fps, args.similarity_csv)
-        
-        print("\nMolecular visualization suite completed!")
-        print(f"Processed {len(mols)} molecules")
-        print(f"All plots saved to: {context.image_dir}")
-        
-    except KeyboardInterrupt:
-        print("\nProcess interrupted by user")
-        return 1
-    except FileNotFoundError as e:
-        print(f"\nFile not found: {e}")
-        print("Tip: Ensure all analysis results are generated before running visualization")
-        # Don't return 1, let the pipeline continue with warning
-        print("Continuing with available data...")
-    except ValueError as e:
-        print(f"\nData validation error: {e}")
-        # Don't return 1, let the pipeline continue with warning
-        print("Continuing with available data...")
-    except Exception as e:
-        print(f"\nUnexpected error: {e}")
-        print("Continuing with available data...")
+    # Process arguments
+    epoch, num_gen = args.epoch, args.num_gen
+    known_binding_site, aurora = args.known_binding_site, args.aurora
+    pdbid = args.pdbid.lower()
     
-    return 0
+    # Setup directories
+    results_dir = Path(paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid)).parent
+    image_dir = results_dir / 'images'
+    
+    # Create output directories
+    output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file, 'tanimoto_inter')
+    Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Load molecular data
+    print("Loading molecular data...")
+    (mols, smiles, filenames, fps), synth_df, lipinski_df, tanimoto_inter_df, tanimoto_intra_df = load_molecular_data(
+        paths, epoch, num_gen, known_binding_site, pdbid, aurora
+    )
+    
+    # Initialize visualization suite
+    viz_suite = MolecularVisualizationSuite(
+        epoch, num_gen, known_binding_site, aurora, pdbid, str(image_dir)
+    )
+    
+    # Generate all plots
+    viz_suite.generate_all_plots(synth_df, lipinski_df, tanimoto_inter_df, fps, tanimoto_intra_df)
 
 
 if __name__ == '__main__':
-    exit(main())
+    main()

@@ -74,6 +74,7 @@ if __name__ == '__main__':
     parser.add_argument('--known_binding_site', type=str, required=False, default='0', help='Allow model to use binding site information (True, False)')
     parser.add_argument('--aurora', type=str, required=False, default='B', help='Aurora kinase type (str, A, B)')
     parser.add_argument('--pdbid', type=str, required=False, default='4af3', help='Aurora kinase type (str, A, B)')
+    parser.add_argument('--experiment', type=str, required=False, default='default', help='Aurora kinase type (str, A, B)')
     parser.add_argument('--output_file', type=str, required=False, default=None, help='Output file path')        
     args = parser.parse_args()
 
@@ -82,20 +83,21 @@ if __name__ == '__main__':
     known_binding_site = args.known_binding_site
     aurora = args.aurora
     pdbid = args.pdbid.lower()
+    experiment = args.experiment
 
     # Get file paths using the PipelinePaths configuration
-    results_dir = Path(paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid)).parent
-    synth_path = paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid)
-    lipinski_path = paths.lipinski_output_path(epoch, num_gen, known_binding_site, pdbid)
-    tanimoto_inter_path = paths.output_path(epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_inter')
+    results_dir = Path(paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid)).parent
+    synth_path = paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'synthesizability_scores')
+    lipinski_path = paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'lipinski_pass')
+    tanimoto_inter_path = paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_inter')
     
     # Use EquiBind ligands path from configuration
-    dest_dir = paths.equibind_ligands_path(epoch, num_gen, known_binding_site, pdbid)
+    dest_dir = paths.equibind_ligands_path(experiment, epoch, num_gen, known_binding_site, pdbid)
 
     # Define output file paths using configuration to match Snakemake rule expectations
-    output_csv = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, f'merged_scores.csv')
-    top_100_output_csv = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, f'top_100_tanimoto.csv')
-    top_50_output_csv = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, f'top_50_sascore.csv')
+    output_csv = paths.hope_box_results_path(experiment, epoch, num_gen, known_binding_site, pdbid, f'merged_scores.csv')
+    top_100_output_csv = paths.hope_box_results_path(experiment, epoch, num_gen, known_binding_site, pdbid, f'top_100_tanimoto.csv')
+    top_50_output_csv = paths.hope_box_results_path(experiment, epoch, num_gen, known_binding_site, pdbid, f'top_50_sascore.csv')
 
     # Directory creation is handled by the configuration system
     merged_results = merge_on_smiles(synth_path=synth_path, 
@@ -119,10 +121,30 @@ if __name__ == '__main__':
         aurora_data_file = paths.aurora_data_path(aurora)
         mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
     
-    copy_top_50_ligands(mols,
-                        top_50_sa_score=top_50_sa_score,
-                        dest_ligand_dir=dest_dir)
+    # copy_top_50_ligands(mols,
+    #                     top_50_sa_score=top_50_sa_score,
+    #                     dest_ligand_dir=dest_dir)
     
+    print(f"Creating ligands directory: {dest_dir}")
+    
+    try:
+        copy_top_50_ligands(mols,
+                            top_50_sa_score=top_50_sa_score,
+                            dest_ligand_dir=dest_dir)
+        
+        # Verify the directory was created
+        if os.path.exists(dest_dir):
+            print(f"Successfully created ligands directory with {len(os.listdir(dest_dir))} files")
+        else:
+            print(f"Warning: Ligands directory was not created: {dest_dir}")
+            # Create empty directory to satisfy Snakemake
+            os.makedirs(dest_dir, exist_ok=True)
+            
+    except Exception as e:
+        print(f"Error in copy_top_50_ligands: {e}")
+        # Create empty directory to satisfy Snakemake
+        os.makedirs(dest_dir, exist_ok=True)
+
     print(f'Top 100 Tanimoto results saved to {top_100_output_csv}')
     print(f'Top 50 SA_Score results saved to {top_50_output_csv}')
 

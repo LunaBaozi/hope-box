@@ -59,7 +59,7 @@ def get_aurora_data_path(config, aurora):
     return str(hope_box_dir / data_dir / f'aurora_kinase_{aurora}_interactions.csv')
 
 
-def get_output_path(config, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None, filename_prefix='synthesizability_scores'):
+def get_output_path(config, experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None, filename_prefix='synthesizability_scores'):
     """Determine output file path"""
     if output_file_arg:
         # Use provided output file path (from Snakemake)
@@ -71,11 +71,11 @@ def get_output_path(config, epoch, num_gen, known_binding_site, pdbid, output_fi
     
     if config:
         # Use config-based structure
-        results_subdir = f'epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}'
+        results_subdir = f'experiment_{experiment}_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}'
         results_dir = hope_box_dir / config['modules']['hope_box']['results_dir'] / results_subdir
     else:
         # Fallback structure
-        results_dir = hope_box_dir / 'results' / f'epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}'
+        results_dir = hope_box_dir / 'results' / f'experiment_{experiment}_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}'
     
     # Dynamic filename generation
     output_file = results_dir / f'{filename_prefix}.csv'
@@ -87,7 +87,7 @@ def get_output_path(config, epoch, num_gen, known_binding_site, pdbid, output_fi
 
 
 
-def get_hope_box_results_path(config, epoch, num_gen, known_binding_site, pdbid, filename):
+def get_hope_box_results_path(config, experiment, epoch, num_gen, known_binding_site, pdbid, filename):
     """Build HOPE-Box results file path from config"""
     script_dir = Path(__file__).parent
     hope_box_dir = script_dir.parent  # Go up to external/hope-box/
@@ -97,7 +97,7 @@ def get_hope_box_results_path(config, epoch, num_gen, known_binding_site, pdbid,
     else:
         results_dir_name = 'results'
     
-    results_subdir = f'epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}'
+    results_subdir = f'experiment_{experiment}_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}'
     full_path = hope_box_dir / results_dir_name / results_subdir / filename
     
     # Create directory if it doesn't exist
@@ -143,26 +143,26 @@ class PipelinePaths:
         """Get Aurora kinase data file path"""
         return get_aurora_data_path(self.config, aurora)
     
-    def output_path(self, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None, filename_prefix='synthesizability_scores'):
+    def output_path(self, experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None, filename_prefix='synthesizability_scores'):
         """Get output file path with dynamic filename"""
-        return get_output_path(self.config, epoch, num_gen, known_binding_site, pdbid, output_file_arg, filename_prefix)
+        return get_output_path(self.config, experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg, filename_prefix)
     
-    def hope_box_results_path(self, epoch, num_gen, known_binding_site, pdbid, filename):
+    def hope_box_results_path(self, experiment, epoch, num_gen, known_binding_site, pdbid, filename):
         """Get HOPE-Box results file path"""
-        return get_hope_box_results_path(self.config, epoch, num_gen, known_binding_site, pdbid, filename)
+        return get_hope_box_results_path(self.config, experiment, epoch, num_gen, known_binding_site, pdbid, filename)
     
     def module_path(self, module_name):
         """Get module path"""
         return get_module_path(self.config, module_name)
     
     # Convenience methods for specific file types
-    def synthesizability_output_path(self, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None):
+    def synthesizability_output_path(self, experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None):
         """Get synthesizability scores output path"""
-        return self.output_path(epoch, num_gen, known_binding_site, pdbid, output_file_arg, 'synthesizability_scores')
+        return self.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg, 'synthesizability_scores')
     
-    def lipinski_output_path(self, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None):
+    def lipinski_output_path(self, experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None):
         """Get Lipinski results output path"""
-        return self.output_path(epoch, num_gen, known_binding_site, pdbid, output_file_arg, 'lipinski_pass')
+        return self.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, output_file_arg, 'lipinski_pass')
     
     def admet_output_path(self, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None):
         """Get ADMET results output path"""
@@ -172,8 +172,8 @@ class PipelinePaths:
         """Get docking results output path"""
         return self.output_path(epoch, num_gen, known_binding_site, pdbid, output_file_arg, 'docking_scores')
     
-    def equibind_ligands_path(self, epoch, num_gen, known_binding_site, pdbid):
+    def equibind_ligands_path(self, experiment, epoch, num_gen, known_binding_site, pdbid):
         """Get EquiBind ligands directory path"""
-        experiment_name = f"experiment_{epoch}_{num_gen}_{known_binding_site}_{pdbid}"
+        experiment_name = f"experiment_{experiment}_{epoch}_{num_gen}_{known_binding_site}_{pdbid}"
         equibind_path = self.project_root / "external" / "equibind" / "data" / pdbid / experiment_name / "ligands"
         return str(equibind_path)

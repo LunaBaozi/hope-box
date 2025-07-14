@@ -114,6 +114,7 @@ if __name__ == '__main__':
     parser.add_argument('--known_binding_site', type=str, required=False, default='0', help='Allow model to use binding site information (True, False)')
     parser.add_argument('--aurora', type=str, required=False, default='B', help='Aurora kinase type (str, A, B)')
     parser.add_argument('--pdbid', type=str, required=False, default='4af3', help='Aurora kinase type (str, A, B)')
+    parser.add_argument('--experiment', type=str, required=False, default='default', help='Experiment name for output directory')
     parser.add_argument('--output_file', type=str, required=False, default=None, help='Output file path')
     args = parser.parse_args()
 
@@ -122,9 +123,10 @@ if __name__ == '__main__':
     known_binding_site = args.known_binding_site
     aurora = args.aurora
     pdbid = args.pdbid.lower() 
+    experiment = args.experiment
 
     # output_csv = paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file)
-    output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file, 'synthesizability_scores')
+    output_csv = paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, args.output_file, 'synthesizability_scores')
 
     if epoch != 0:
         # Process generated molecules from GraphBP

@@ -122,6 +122,7 @@ class PlotContext:
     known_binding_site: str
     aurora: str
     pdbid: str
+    experiment: str
     image_dir: Path
     
     def get_filename(self, plot_type: str) -> str:
@@ -151,7 +152,7 @@ class MolecularVisualizationSuite:
     MOL_IMAGE_SIZE = (1800, 1800)
     
     def __init__(self, epoch: int, num_gen: int, known_binding_site: str, 
-                 aurora: str, pdbid: str, image_dir: str):
+                 aurora: str, pdbid: str, image_dir: str, experiment: str):
         """Initialize the visualization suite with experiment parameters."""
         self.epoch = epoch
         self.num_gen = num_gen
@@ -159,6 +160,7 @@ class MolecularVisualizationSuite:
         self.aurora = aurora
         self.pdbid = pdbid
         self.image_dir = Path(image_dir)
+        self.experiment = experiment
         
         # Ensure image directory exists
         self.image_dir.mkdir(parents=True, exist_ok=True)
@@ -636,55 +638,55 @@ class MolecularVisualizationSuite:
             except Exception as e:
                 print(f"Failed to build matrix from pairs: {e}")
         
-        # Method 2: Try serialized matrix
-        if 'similarity_matrix' in tanimoto_df.columns:
-            try:
-                import ast
-                mat_data = []
-                for row in tanimoto_df['similarity_matrix']:
-                    if isinstance(row, str):
-                        parsed = ast.literal_eval(row)
-                        mat_data.append(parsed)
-                    else:
-                        mat_data.append(row)
-                mat = np.array(mat_data, dtype=float)
-            except Exception as e:
-                print(f"Failed to parse serialized matrix: {e}")
+        # # Method 2: Try serialized matrix
+        # if 'similarity_matrix' in tanimoto_df.columns:
+        #     try:
+        #         import ast
+        #         mat_data = []
+        #         for row in tanimoto_df['similarity_matrix']:
+        #             if isinstance(row, str):
+        #                 parsed = ast.literal_eval(row)
+        #                 mat_data.append(parsed)
+        #             else:
+        #                 mat_data.append(row)
+        #         mat = np.array(mat_data, dtype=float)
+        #     except Exception as e:
+        #         print(f"Failed to parse serialized matrix: {e}")
         
-        # Method 3: Try matrix columns
-        if mat is None:
-            matrix_cols = [col for col in tanimoto_df.columns if col.startswith('mol_')]
-            if matrix_cols:
-                try:
-                    mat = tanimoto_df[matrix_cols].values.astype(float)
-                except Exception as e:
-                    print(f"Failed to convert matrix columns to float: {e}")
-                    # Try to handle mixed data types
-                    try:
-                        mat_data = []
-                        for _, row in tanimoto_df[matrix_cols].iterrows():
-                            row_data = []
-                            for val in row:
-                                if pd.isna(val):
-                                    row_data.append(0.0)
-                                elif isinstance(val, (int, float)):
-                                    row_data.append(float(val))
-                                elif isinstance(val, str):
-                                    try:
-                                        row_data.append(float(val))
-                                    except ValueError:
-                                        row_data.append(0.0)
-                                else:
-                                    row_data.append(0.0)
-                            mat_data.append(row_data)
-                        mat = np.array(mat_data, dtype=float)
-                    except Exception as e2:
-                        print(f"Failed to manually convert matrix data: {e2}")
+        # # Method 3: Try matrix columns
+        # if mat is None:
+        #     matrix_cols = [col for col in tanimoto_df.columns if col.startswith('mol_')]
+        #     if matrix_cols:
+        #         try:
+        #             mat = tanimoto_df[matrix_cols].values.astype(float)
+        #         except Exception as e:
+        #             print(f"Failed to convert matrix columns to float: {e}")
+        #             # Try to handle mixed data types
+        #             try:
+        #                 mat_data = []
+        #                 for _, row in tanimoto_df[matrix_cols].iterrows():
+        #                     row_data = []
+        #                     for val in row:
+        #                         if pd.isna(val):
+        #                             row_data.append(0.0)
+        #                         elif isinstance(val, (int, float)):
+        #                             row_data.append(float(val))
+        #                         elif isinstance(val, str):
+        #                             try:
+        #                                 row_data.append(float(val))
+        #                             except ValueError:
+        #                                 row_data.append(0.0)
+        #                         else:
+        #                             row_data.append(0.0)
+        #                     mat_data.append(row_data)
+        #                 mat = np.array(mat_data, dtype=float)
+        #             except Exception as e2:
+        #                 print(f"Failed to manually convert matrix data: {e2}")
         
         # Get filenames
-        if 'filename1' in tanimoto_df.columns and 'filename2' in tanimoto_df.columns:
-            filenames1 = tanimoto_df['filename1'].unique().tolist()
-            filenames2 = tanimoto_df['filename2'].unique().tolist()
+        if 'mol_1' in tanimoto_df.columns and 'mol_2' in tanimoto_df.columns:
+            filenames1 = tanimoto_df['mol_1'].unique().tolist()
+            filenames2 = tanimoto_df['mol_2'].unique().tolist()
         elif 'filename' in tanimoto_df.columns:
             filenames1 = filenames2 = tanimoto_df['filename'].unique().tolist()
         elif mat is not None:
@@ -696,12 +698,21 @@ class MolecularVisualizationSuite:
         
     def _build_matrix_from_pairs(self, df: pd.DataFrame) -> Tuple[Optional[np.ndarray], List[str], List[str]]:
         """Build similarity matrix from pairwise similarity data."""
-        similarity_col = 'tanimoto_similarity' if 'tanimoto' in df.columns else 'similarity'
+        # Look for the correct similarity column
+        similarity_col = None
+        for col in ['tanimoto_similarity', 'similarity', 'tanimoto']:
+            if col in df.columns:
+                similarity_col = col
+                break
         
-        if 'filename1' in df.columns and 'filename2' in df.columns:
+        if similarity_col is None:
+            print("Warning: No similarity column found")
+            return None, [], []
+        
+        if 'mol_1' in df.columns and 'mol_2' in df.columns:
             # Pairwise format
-            filenames1 = sorted(df['filename1'].unique())
-            filenames2 = sorted(df['filename2'].unique())
+            filenames1 = sorted(df['mol_1'].unique())
+            filenames2 = sorted(df['mol_2'].unique())
             
             n1, n2 = len(filenames1), len(filenames2)
             mat = np.zeros((n2, n1))  # Note: transposed for proper indexing
@@ -710,8 +721,8 @@ class MolecularVisualizationSuite:
             filename2_to_idx = {name: i for i, name in enumerate(filenames2)}
             
             for _, row in df.iterrows():
-                i = filename2_to_idx.get(row['filename2'])
-                j = filename1_to_idx.get(row['filename1'])
+                i = filename2_to_idx.get(row['mol_2'])
+                j = filename1_to_idx.get(row['mol_1'])
                 if i is not None and j is not None:
                     try:
                         mat[i, j] = float(row[similarity_col])
@@ -795,8 +806,8 @@ class MolecularVisualizationSuite:
             
             # Create histogram
             fig, ax = self._create_histogram_base(
-                pd.DataFrame({'tanimoto_similarity': similarities}),
-                'tanimoto_similarity',
+                pd.DataFrame({'tanimoto': similarities}),
+                'tanimoto',
                 f'Distribution of {similarity_type.title()}-molecular Tanimoto Similarities',
                 'Tanimoto Similarity',
                 'skyblue',
@@ -825,7 +836,7 @@ N pairs: {len(similarities)}"""
     def _extract_similarity_values(self, tanimoto_df: pd.DataFrame) -> Optional[pd.Series]:
         """Extract similarity values from DataFrame with robust error handling."""
         # Try direct similarity columns first
-        for col_name in ['tanimoto_similarity', 'similarity']:
+        for col_name in ['tanimoto', 'tanimoto_similarity', 'similarity']:
             if col_name in tanimoto_df.columns:
                 try:
                     similarities = tanimoto_df[col_name].dropna()
@@ -931,7 +942,8 @@ N pairs: {len(similarities)}"""
 
 
 def load_molecular_data(paths: PipelinePaths, epoch: int, num_gen: int, 
-                       known_binding_site: str, pdbid: str, aurora: str):
+                       known_binding_site: str, pdbid: str, aurora: str,
+                       experiment: str):
     """Load molecular data from various sources."""
     if epoch != 0:
         # Load generated molecules
@@ -943,13 +955,13 @@ def load_molecular_data(paths: PipelinePaths, epoch: int, num_gen: int,
         mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
     
     # Load analysis results
-    synth_df = pd.read_csv(paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid))
-    lipinski_df = pd.read_csv(paths.lipinski_output_path(epoch, num_gen, known_binding_site, pdbid))
-    tanimoto_inter_df = pd.read_csv(paths.output_path(epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_inter'))
+    synth_df = pd.read_csv(paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'synthesizability_scores'))
+    lipinski_df = pd.read_csv(paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'lipinski_pass'))
+    tanimoto_inter_df = pd.read_csv(paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_inter'))
     
     # Try to load intra-molecular Tanimoto data if available
     try:
-        tanimoto_intra_df = pd.read_csv(paths.output_path(epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_intra'))
+        tanimoto_intra_df = pd.read_csv(paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_intra'))
     except FileNotFoundError:
         tanimoto_intra_df = None
         print("Intra-molecular Tanimoto data not found, skipping...")
@@ -975,6 +987,8 @@ def main():
                        help='Aurora kinase type (default: B)')
     parser.add_argument('--pdbid', type=str, default='4af3',
                        help='PDB ID for analysis (default: 4af3)')
+    parser.add_argument('--experiment', type=str, default='default',
+                       help='Experiment name')
     parser.add_argument('--output_file', type=str, default=None,
                        help='Custom output file path (optional)')
     
@@ -984,24 +998,27 @@ def main():
     epoch, num_gen = args.epoch, args.num_gen
     known_binding_site, aurora = args.known_binding_site, args.aurora
     pdbid = args.pdbid.lower()
+    experiment = args.experiment
     
     # Setup directories
-    results_dir = Path(paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid)).parent
+    results_dir = Path(paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, None, 'synthesizability_scores')).parent
     image_dir = results_dir / 'images'
+
+    image_dir.mkdir(parents=True, exist_ok=True)
     
     # Create output directories
-    output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file, 'tanimoto_inter')
+    output_csv = paths.output_path(experiment, epoch, num_gen, known_binding_site, pdbid, args.output_file, 'tanimoto_inter')
     Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
     
     # Load molecular data
     print("Loading molecular data...")
     (mols, smiles, filenames, fps), synth_df, lipinski_df, tanimoto_inter_df, tanimoto_intra_df = load_molecular_data(
-        paths, epoch, num_gen, known_binding_site, pdbid, aurora
+        paths, epoch, num_gen, known_binding_site, pdbid, aurora, experiment
     )
     
     # Initialize visualization suite
     viz_suite = MolecularVisualizationSuite(
-        epoch, num_gen, known_binding_site, aurora, pdbid, str(image_dir)
+        epoch, num_gen, known_binding_site, aurora, pdbid, str(image_dir), experiment
     )
     
     # Generate all plots
@@ -1010,3 +1027,13 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+# plot_tanimoto_similarity_heatmap
+# _extract_similarity_data
+# _build_matrix_from_pairs
+# _create_tanimoto_heatmap
+# plot_tanimoto_distribution
+# _extract_similarity_values
+# plot_tanimoto_summary_comparison

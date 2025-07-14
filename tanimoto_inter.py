@@ -1,9 +1,7 @@
-import os
 import argparse
 import pandas as pd
 from rdkit.Chem import DataStructs
 import numpy as np
-import matplotlib.pyplot as plt
 
 from scripts.aurk_int_preprocess import read_aurora_kinase_interactions
 from scripts.gen_mols_preprocess import load_mols_from_sdf_folder
@@ -48,59 +46,31 @@ if __name__ == '__main__':
     aurora = args.aurora
     pdbid = args.pdbid.lower()
 
-    # output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file) 
     output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file, 'tanimoto_inter')
+
+    other_aurora = 'B' if aurora == 'A' else 'A'
+    aurora_data_file = paths.aurora_data_path(aurora)
+    other_aurora_data_file = paths.aurora_data_path(other_aurora)
 
     if epoch != 0:
         # Process generated molecules from GraphBP
         sdf_folder = paths.graphbp_sdf_path(epoch, num_gen, known_binding_site, pdbid)
         print(f"Loading molecules from: {sdf_folder}")
 
-        mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
-        tanimoto, mat = compute_tanimoto_scores(mols, smiles, filenames)
+        mols1, smiles1, filenames1, fps1 = load_mols_from_sdf_folder(sdf_folder)
+        mols2, smiles2, filenames2, fps2 = read_aurora_kinase_interactions(aurora_data_file)        
+        tanimoto, mat = compute_tanimoto_scores(smiles1, filenames1, fps1, smiles2, filenames2, fps2)
         tanimoto.to_csv(output_csv, index=False)
 
     else:
-        # Process known Aurora kinase inhibitors
-        aurora_data_file = paths.aurora_data_path(aurora)
-        print(f"Loading Aurora kinase data from: {aurora_data_file}")
-        
-        mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
-        tanimoto, mat = compute_tanimoto_scores(mols, smiles, filenames)
+        # Calculating scores for Aurora inhibitors
+        mols1, smiles1, filenames1, fps1 = read_aurora_kinase_interactions(aurora_data_file)
+        mols2, smiles2, filenames2, fps2 = read_aurora_kinase_interactions(other_aurora_data_file)
+        tanimoto, mat = compute_tanimoto_scores(smiles1, filenames1, fps1, smiles2, filenames2, fps2)
         tanimoto.to_csv(output_csv, index=False)
 
     print(f'Tanimoto inter results saved to {output_csv}')
 
-    # script_dir = os.path.dirname(os.path.abspath(__file__))
-    # parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-    # sdf_folder = os.path.join(parent_dir, f'trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
-    # known_inhib_file = os.path.join(script_dir, f'data/aurora_kinase_{aurora}_interactions.csv')
-    # results_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
-    # image_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/images')
-    # output_csv = os.path.join(results_dir, f'tanimoto_inter_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-    
-    # os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-    # os.makedirs(image_dir, exist_ok=True)
-
-    # if epoch != 0:
-    #     # Calculating scores for generated molecules
-    #     mols1, smiles1, filenames1, fps1 = load_mols_from_sdf_folder(sdf_folder)
-    #     mols2, smiles2, filenames2, fps2 = read_aurora_kinase_interactions(known_inhib_file)        
-    #     tanimoto, mat = compute_tanimoto_scores(smiles1, filenames1, fps1, smiles2, filenames2, fps2)
-    #     tanimoto.to_csv(output_csv, index=False)
-
-    # else:
-    #     other_aurora = 'B' if aurora == 'A' else 'A'
-    #     # Calculating scores for Aurora inhibitors
-    #     known_inhib_file2 = os.path.join(script_dir, f'data/aurora_kinase_{other_aurora}_interactions.csv')
-    #     mols1, smiles1, filenames1, fps1 = read_aurora_kinase_interactions(known_inhib_file)
-    #     mols2, smiles2, filenames2, fps2 = read_aurora_kinase_interactions(known_inhib_file)
-    #     tanimoto, mat = compute_tanimoto_scores(smiles1, filenames1, fps1, smiles2, filenames2, fps2)
-    #     tanimoto.to_csv(output_csv, index=False)
-
-    # print(f'Tanimoto inter scores saved to {output_csv}')
- 
-    # print('Generating lower triangular heatmap...')
 
     # # Mask for lower triangle
     # mask = np.tril(np.ones_like(mat, dtype=bool))

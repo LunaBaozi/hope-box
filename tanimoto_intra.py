@@ -1,34 +1,52 @@
-import os
 import argparse
-import itertools
 
-# from rdkit import Chem
 from rdkit.Chem import DataStructs
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from scripts.aurk_int_preprocess import read_aurora_kinase_interactions
 from scripts.gen_mols_preprocess import load_mols_from_sdf_folder
 from scripts.load_config_paths import PipelinePaths
 
 def compute_tanimoto_scores(smiles, filenames, fps):
+    """Compute intra-molecular Tanimoto similarity scores"""
+
     n = len(fps)
+    # tanimoto_matrix = []
     mat = np.zeros((n, n))
     results = []
-
-    for i, j in itertools.combinations(range(n), 2):
-        score = DataStructs.TanimotoSimilarity(fps[i], fps[j])
-        mat[i, j] = score
-        mat[j, i] = score 
-        results.append({
-            'mol_1': filenames[i],
-            'smi_1': smiles[i],
-            'mol_2': filenames[j],
-            'smi_2': smiles[j],
-            'tanimoto': score
-        })
-    return pd.DataFrame(results), mat
+    
+    # Compute pairwise Tanimoto similarities
+    for i in range(n):
+        # row = []
+        for j in range(i+1, n):
+            if fps[i] is not None and fps[j] is not None:
+                score = DataStructs.TanimotoSimilarity(fps[i], fps[j])
+                mat[i, j] = score
+                mat[j, i] = score
+                # row.append(score)
+            else:
+                mat[i, j] = 0.0
+                mat[j, i] = 0.0
+                # row.append(0.0)  # Default for invalid molecules
+            results.append({
+                'mol_1': filenames[i],
+                'smi_1': smiles[i],
+                'mol_2': filenames[j],
+                'smi_2': smiles[j],
+                'tanimoto': score
+            })
+        # tanimoto_matrix.append(row)
+        np.fill_diagonal(mat, 1.0)  # Self-similarity is always 1.0
+    
+    # Calculate average similarity for each molecule (excluding self-similarity)
+    # avg_similarities = []
+    # for i in range(n):
+    #     similarities = [tanimoto_matrix[i][j] for j in range(n) if i != j]
+    #     avg_sim = sum(similarities) / len(similarities) if similarities else 0.0
+    #     avg_similarities.append(avg_sim)
+    
+    return pd.DataFrame(results), mat  #avg_similarities, tanimoto_matrix
 
 if __name__ == '__main__':
     paths = PipelinePaths()
@@ -48,7 +66,6 @@ if __name__ == '__main__':
     aurora = args.aurora
     pdbid = args.pdbid.lower()
 
-    # output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file) 
     output_csv = paths.output_path(epoch, num_gen, known_binding_site, pdbid, args.output_file, 'tanimoto_intra')
 
     if epoch != 0:
@@ -57,7 +74,7 @@ if __name__ == '__main__':
         print(f"Loading molecules from: {sdf_folder}")
 
         mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
-        tanimoto, mat = compute_tanimoto_scores(mols, smiles, filenames)
+        tanimoto, mat = compute_tanimoto_scores(smiles, filenames, fps)
         tanimoto.to_csv(output_csv, index=False)
 
     else:
@@ -66,35 +83,10 @@ if __name__ == '__main__':
         print(f"Loading Aurora kinase data from: {aurora_data_file}")
         
         mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
-        tanimoto, mat = compute_tanimoto_scores(mols, smiles, filenames)
+        tanimoto, mat = compute_tanimoto_scores(smiles, filenames, fps)
         tanimoto.to_csv(output_csv, index=False)
 
     print(f'Tanimoto intra results saved to {output_csv}')
-
-    # script_dir = os.path.dirname(os.path.abspath(__file__))
-    # parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-    # sdf_folder = os.path.join(parent_dir, f'trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
-    # known_inhib_file = os.path.join(script_dir, f'data/aurora_kinase_{aurora}_interactions.csv')
-    # results_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
-    # image_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/images')
-    # output_csv = os.path.join(results_dir, f'tanimoto_intra_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-    
-    # os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-    # os.makedirs(image_dir, exist_ok=True)
-
-    # if epoch != 0:
-    #     # Calculating scores for generated molecules
-    #     mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
-    #     tanimoto, mat = compute_tanimoto_scores(smiles, filenames, fps)
-    #     tanimoto.to_csv(output_csv, index=False)
-
-    # else:
-    #     # Calculating scores for Aurora inhibitors
-    #     mols, smiles, filenames, fps = read_aurora_kinase_interactions(known_inhib_file)
-    #     tanimoto, mat = compute_tanimoto_scores(smiles, filenames, fps)
-    #     tanimoto.to_csv(output_csv, index=False)
-
-    # print(f'Tanimoto intra scores saved to {output_csv}')
     
     # print('Generating lower triangular heatmap...')
 

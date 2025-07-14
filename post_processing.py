@@ -3,6 +3,8 @@ import pandas as pd
 
 from rdkit import Chem
 
+from pathlib import Path
+
 from scripts.aurk_int_preprocess import read_aurora_kinase_interactions
 from scripts.gen_mols_preprocess import load_mols_from_sdf_folder
 from scripts.load_config_paths import PipelinePaths
@@ -81,35 +83,24 @@ if __name__ == '__main__':
     aurora = args.aurora
     pdbid = args.pdbid.lower()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-    sdf_folder = os.path.join(parent_dir, f'trained_model_reduced_dataset_100_epochs/gen_mols_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/sdf')
-    known_inhib_file = os.path.join(script_dir, f'data/aurora_kinase_{aurora}_interactions.csv')
-    results_dir = os.path.join(script_dir, f'results_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}')
-    synth_csv = os.path.join(results_dir, f'synthesizability_scores_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-    lipinski_csv = os.path.join(results_dir, f'lipinski_pass_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-    tanimoto_inter_csv = os.path.join(results_dir, f'tanimoto_inter_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-
-    if aurora == 'A':
-        aur_type = '4cfg'
-    elif aurora == 'B':
-        aur_type = '4af3'
-    else:
-        raise ValueError('Aurora type must be "A" or "B".')
+    # Get file paths using the PipelinePaths configuration
+    results_dir = Path(paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid)).parent
+    synth_path = paths.synthesizability_output_path(epoch, num_gen, known_binding_site, pdbid)
+    lipinski_path = paths.lipinski_output_path(epoch, num_gen, known_binding_site, pdbid)
+    tanimoto_inter_path = paths.output_path(epoch, num_gen, known_binding_site, pdbid, None, 'tanimoto_inter')
     
-    dest_dir = os.path.join(parent_dir, f'docking/{aur_type}/experiment_epoch_{epoch}_mols_{num_gen}_bs_{known_binding_site}_pdbid_{pdbid}/ligands')
+    # Use EquiBind ligands path from configuration
+    dest_dir = paths.equibind_ligands_path(epoch, num_gen, known_binding_site, pdbid)
 
-    output_csv = os.path.join(results_dir, f'merged_scores_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-    top_100_output_csv = os.path.join(results_dir, f'top_100_tanimoto_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
-    top_50_output_csv = os.path.join(results_dir, f'top_50_sascore_{epoch}_{num_gen}_{known_binding_site}_{pdbid}.csv')
+    # Define output file paths using configuration to match Snakemake rule expectations
+    output_csv = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, f'merged_scores.csv')
+    top_100_output_csv = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, f'top_100_tanimoto.csv')
+    top_50_output_csv = paths.hope_box_results_path(epoch, num_gen, known_binding_site, pdbid, f'top_50_sascore.csv')
 
-    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-    os.makedirs(os.path.dirname(top_100_output_csv), exist_ok=True)
-    os.makedirs(os.path.dirname(top_50_output_csv), exist_ok=True)
-
-    merged_results = merge_on_smiles(synth_path=synth_csv, 
-                                     lipinski_path=lipinski_csv,
-                                     tanimoto_path=tanimoto_inter_csv,
+    # Directory creation is handled by the configuration system
+    merged_results = merge_on_smiles(synth_path=synth_path, 
+                                     lipinski_path=lipinski_path,
+                                     tanimoto_path=tanimoto_inter_path,
                                      output_path=output_csv)
                     
     top_100_tanimoto = export_top_100_tanimoto(merged_results)    
@@ -120,11 +111,13 @@ if __name__ == '__main__':
 
     if epoch != 0:
         # Calculating scores for generated molecules
+        sdf_folder = paths.graphbp_sdf_path(epoch, num_gen, known_binding_site, pdbid)
         mols, smiles, filenames, fps = load_mols_from_sdf_folder(sdf_folder)
 
     else:
         # Calculating scores for Aurora inhibitors
-        mols, smiles, filenames, fps = read_aurora_kinase_interactions(known_inhib_file)
+        aurora_data_file = paths.aurora_data_path(aurora)
+        mols, smiles, filenames, fps = read_aurora_kinase_interactions(aurora_data_file)
     
     copy_top_50_ligands(mols,
                         top_50_sa_score=top_50_sa_score,

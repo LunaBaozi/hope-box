@@ -171,3 +171,9 @@ class PipelinePaths:
     def docking_output_path(self, epoch, num_gen, known_binding_site, pdbid, output_file_arg=None):
         """Get docking results output path"""
         return self.output_path(epoch, num_gen, known_binding_site, pdbid, output_file_arg, 'docking_scores')
+    
+    def equibind_ligands_path(self, epoch, num_gen, known_binding_site, pdbid):
+        """Get EquiBind ligands directory path"""
+        experiment_name = f"experiment_{epoch}_{num_gen}_{known_binding_site}_{pdbid}"
+        equibind_path = self.project_root / "external" / "equibind" / "data" / pdbid / experiment_name / "ligands"
+        return str(equibind_path)
